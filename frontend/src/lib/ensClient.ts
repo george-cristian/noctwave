@@ -8,6 +8,6 @@ import { addEnsContracts } from '@ensdomains/ensjs'
 export const ensClient = createPublicClient({
   chain: addEnsContracts(sepolia),
   transport: http(
-    process.env.NEXT_PUBLIC_ENS_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com'
+    process.env.NEXT_PUBLIC_ENS_RPC_URL ?? 'https://ethereum-sepolia-rpc.publicnode.com'  // rpc.sepolia.org is unreliable
   ),
 })

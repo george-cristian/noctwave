@@ -1,8 +1,7 @@
 import { createPublicClient, http, parseAbi } from 'viem'
 import { baseSepolia } from 'viem/chains'
-import { Bee } from '@ethersphere/bee-js'
+import { bee, feedWriteJson, feedReadJson, makeFeedSigner } from './swarmClient'
 import { encryptKey, computeLookupAddress } from './crypto'
-import { keccak256, stringToBytes, hexToBytes } from 'viem'
 
 const client = createPublicClient({
   chain: baseSepolia,
@@ -13,8 +12,9 @@ const VAULT_ABI = parseAbi([
   'event SubscriberAdded(address indexed subscriber)',
 ])
 
-function keyFeedTopic(lookupAddress: string): Uint8Array {
-  return hexToBytes(keccak256(stringToBytes(`noctwave-key:${lookupAddress}`)))
+// Derive feed topic name for a specific key slot — unique per (creator, subscriber, post)
+function keyTopicName(lookupAddress: string): string {
+  return `noctwave-key:${lookupAddress}`
 }
 
 export async function getSubscribersFromChain(vaultAddress: string): Promise<string[]> {
@@ -30,61 +30,53 @@ export async function getSubscribersFromChain(vaultAddress: string): Promise<str
   return [...new Set(logs.map(log => (log.args as { subscriber: string }).subscriber))]
 }
 
+// Called from creator dashboard after subscribing or on load.
+// Encrypts content keys for each subscriber and stores them in Swarm Feeds.
 export async function syncSubscriberKeys(params: {
   creatorAddress: string
   vaultAddress: string
   postKeys: Map<string, Uint8Array>
-  gatewayUrl: string
-  batchId: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  feedSigner: any
   encryptForSubscriber: (contentKey: Uint8Array, subscriberAddress: string, postCID: string) => Promise<Uint8Array>
 }): Promise<void> {
-  const { creatorAddress, vaultAddress, postKeys, gatewayUrl, batchId, feedSigner, encryptForSubscriber } = params
+  const { creatorAddress, vaultAddress, postKeys, encryptForSubscriber } = params
   const subscribers = await getSubscribersFromChain(vaultAddress)
-  // bee-js v8 feed writes require Dev A's signer adapter — stub returns early
-  if (!feedSigner) return
-
-  const bee = new Bee(gatewayUrl)
+  const signer = await makeFeedSigner(creatorAddress)
 
   for (const subscriber of subscribers) {
     for (const [postCID, contentKey] of postKeys.entries()) {
       const lookupAddress = computeLookupAddress(creatorAddress, subscriber, postCID)
-      const topic = keyFeedTopic(lookupAddress)
+      const topicName = keyTopicName(lookupAddress)
 
+      // Skip if already delivered
       try {
-        const reader = bee.makeFeedReader('sequence', topic, creatorAddress)
-        await reader.download()
-        continue // already delivered
+        await feedReadJson<{ key: string }>(topicName, creatorAddress)
+        continue
       } catch {
-        // not yet written — fall through
+        // Not yet written — fall through
       }
 
       const encryptedKey = await encryptForSubscriber(contentKey, subscriber, postCID)
-      const { reference } = await bee.uploadData(batchId, encryptedKey)
-      const writer = bee.makeFeedWriter('sequence', topic, creatorAddress, feedSigner)
-      await writer.upload(batchId, reference)
+      // Store as base64 JSON — avoids binary/BytesReference issues
+      const keyB64 = btoa(String.fromCharCode(...encryptedKey))
+      await feedWriteJson(topicName, { key: keyB64 }, signer)
     }
   }
 }
 
+// Called from subscriber's browser — reads encrypted key from creator's Swarm Feed
 export async function fetchEncryptedKey(params: {
   creatorAddress: string
   subscriberAddress: string
   postCID: string
-  gatewayUrl: string
 }): Promise<Uint8Array | null> {
-  const { creatorAddress, subscriberAddress, postCID, gatewayUrl } = params
+  const { creatorAddress, subscriberAddress, postCID } = params
   const lookupAddress = computeLookupAddress(creatorAddress, subscriberAddress, postCID)
-  const topic = keyFeedTopic(lookupAddress)
+  const topicName = keyTopicName(lookupAddress)
 
-  const bee = new Bee(gatewayUrl)
   try {
-    const reader = bee.makeFeedReader('sequence', topic, creatorAddress)
-    const { reference } = await reader.download()
-    const data = await bee.downloadData(reference)
-    return data
+    const { key } = await feedReadJson<{ key: string }>(topicName, creatorAddress)
+    return Uint8Array.from(atob(key), c => c.charCodeAt(0))
   } catch {
-    return null
+    return null  // creator hasn't synced yet
   }
 }

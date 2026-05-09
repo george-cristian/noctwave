@@ -12,7 +12,10 @@
       "WebFetch(domain:docs.superfluid.finance)",
       "WebFetch(domain:docs.superfluid.org)",
       "Bash(sed -i '' -e 's/Sovereign Feed/Noctwave/g' -e s/sovereign-feed/noctwave/g -e s/SovFeedRegistry/NoctwaveRegistry/g -e s/SovFeed/Noctwave/g -e s/sovfeed/noctwave/g /Users/sunnyg/Documents/personal/repos/eth-prague-project/PRD.md)",
-      "Bash(sed -i '' -e 's/Sovereign Feed/Noctwave/g' -e s/sovereign-feed/noctwave/g -e s/SovFeedRegistry/NoctwaveRegistry/g -e s/SovFeed/Noctwave/g -e s/sovfeed/noctwave/g /Users/sunnyg/Documents/personal/repos/eth-prague-project/SOVEREIGN_FEED_v2.md)"
+      "Bash(sed -i '' -e 's/Sovereign Feed/Noctwave/g' -e s/sovereign-feed/noctwave/g -e s/SovFeedRegistry/NoctwaveRegistry/g -e s/SovFeed/Noctwave/g -e s/sovfeed/noctwave/g /Users/sunnyg/Documents/personal/repos/eth-prague-project/SOVEREIGN_FEED_v2.md)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(node *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

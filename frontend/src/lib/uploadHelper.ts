@@ -1,28 +1,21 @@
+import { bee } from './swarmClient'
+import { NULL_STAMP } from '@ethersphere/bee-js'
+
+// Upload data or a named file directly to Swarm via bzz.limo — no API route needed
 export async function uploadToSwarm(
   data: Uint8Array,
   filename?: string,
   contentType?: string
 ): Promise<string> {
-  const params = new URLSearchParams()
   if (filename) {
-    params.set('type', 'file')
-    params.set('name', filename)
-  } else {
-    params.set('type', 'data')
-  }
-  if (contentType) params.set('ct', contentType)
-
-  const res = await fetch(`/api/swarm/upload?${params}`, {
-    method: 'POST',
-    body: data as unknown as BodyInit,
-    headers: { 'Content-Type': 'application/octet-stream' },
-  })
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error(`Swarm upload failed: ${err.error ?? res.statusText}`)
+    const ab = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+    const file = new File([ab], filename, { type: contentType ?? 'application/octet-stream' })
+    const result = await bee.uploadFile(NULL_STAMP, file, filename, {
+      contentType: contentType ?? 'application/octet-stream',
+    })
+    return result.reference.toString()
   }
 
-  const { reference } = await res.json()
-  return reference as string
+  const result = await bee.uploadData(NULL_STAMP, data)
+  return result.reference.toString()
 }

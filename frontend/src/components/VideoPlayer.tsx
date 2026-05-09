@@ -1,6 +1,5 @@
 'use client'
-import Hls from 'hls.js'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { decryptContent } from '@/lib/crypto'
 import { EncryptionBadge } from './ui/EncryptionBadge'
 import { Spinner } from './ui/Spinner'
@@ -8,112 +7,104 @@ import { Spinner } from './ui/Spinner'
 interface Props {
   manifestCID: string
   contentKey: Uint8Array | null
-  state?: 'loading' | 'decrypting' | 'playing'
 }
 
-export function VideoPlayer({ manifestCID, contentKey, state = 'playing' }: Props) {
+export function VideoPlayer({ manifestCID, contentKey }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const hlsRef = useRef<Hls | null>(null)
-  const gateway = process.env.NEXT_PUBLIC_SWARM_GATEWAY ?? 'https://api.gateway.ethswarm.org'
+  const blobUrlRef = useRef<string | null>(null)
+  const [playerState, setPlayerState] = useState<'loading' | 'decrypting' | 'playing' | 'error'>('loading')
+  const gateway = process.env.NEXT_PUBLIC_SWARM_GATEWAY ?? 'https://bzz.limo'
 
   useEffect(() => {
-    if (!contentKey || !videoRef.current || !manifestCID) return
-    const video = videoRef.current
-    const key = contentKey
+    if (!contentKey || !manifestCID) return
+    let cancelled = false
 
-    if (hlsRef.current) {
-      hlsRef.current.destroy()
-    }
+    async function fetchAndDecrypt() {
+      if (!contentKey) return
+      setPlayerState('loading')
+      try {
+        // Fetch encrypted blob from Swarm gateway
+        const res = await fetch(`${gateway}/bzz/${manifestCID}`)
+        if (!res.ok) throw new Error(`Swarm fetch failed: ${res.status}`)
+        const encrypted = new Uint8Array(await res.arrayBuffer())
 
-    // Custom loader that intercepts TS segments and decrypts them in-flight
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const DefaultLoader = Hls.DefaultConfig.loader as any
+        if (cancelled) return
+        setPlayerState('decrypting')
 
-    class DecryptLoader {
-      private inner: InstanceType<typeof DefaultLoader>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      constructor(config: any) { this.inner = new DefaultLoader(config) }
+        // Split IV (first 12 bytes) from ciphertext
+        const iv = encrypted.slice(0, 12)
+        const ciphertext = encrypted.slice(12)
+        const decrypted = await decryptContent(ciphertext, iv, contentKey)
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      load(context: any, config: any, callbacks: any) {
-        const isSegment = !context.url.endsWith('.m3u8') && !context.url.includes('playlist')
-        if (!isSegment) {
-          this.inner.load(context, config, callbacks)
-          return
+        if (cancelled) return
+
+        // Revoke previous blob URL to free memory
+        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current)
+
+        const blob = new Blob([decrypted.buffer as ArrayBuffer], { type: 'video/mp4' })
+        const url = URL.createObjectURL(blob)
+        blobUrlRef.current = url
+
+        if (videoRef.current) {
+          videoRef.current.src = url
+          videoRef.current.load()
         }
-        const origSuccess = callbacks.onSuccess
-        this.inner.load(context, config, {
-          ...callbacks,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          onSuccess: (response: any, stats: any, ctx: any, networkDetails: any) => {
-            const encrypted = new Uint8Array(response.data as ArrayBuffer)
-            const iv = encrypted.slice(0, 12)
-            const cipher = encrypted.slice(12)
-            decryptContent(cipher, iv, key).then(decrypted => {
-              response.data = decrypted.buffer
-              origSuccess(response, stats, ctx, networkDetails)
-            }).catch(() => {
-              origSuccess(response, stats, ctx, networkDetails)
-            })
-          },
-        })
+        setPlayerState('playing')
+      } catch (err) {
+        console.error('VideoPlayer error:', err)
+        if (!cancelled) setPlayerState('error')
       }
-
-      abort() { this.inner.abort?.() }
-      destroy() { this.inner.destroy?.() }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      get context() { return (this.inner as any).context }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      get stats() { return (this.inner as any).stats }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const hls = new Hls({ loader: DecryptLoader as any })
-    hlsRef.current = hls
-    hls.loadSource(`${gateway}/bzz/${manifestCID}`)
-    hls.attachMedia(video)
-
-    return () => { hls.destroy(); hlsRef.current = null }
+    fetchAndDecrypt()
+    return () => {
+      cancelled = true
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
+    }
   }, [manifestCID, contentKey, gateway])
 
   return (
-    <div
-      style={{
-        position: 'relative',
-        background: '#000',
-        borderRadius: 'var(--r-12)',
-        overflow: 'hidden',
-        border: '1px solid var(--border)',
-        aspectRatio: '16 / 9',
-      }}
-    >
+    <div style={{
+      position: 'relative',
+      background: '#000',
+      borderRadius: 'var(--r-12)',
+      overflow: 'hidden',
+      border: '1px solid var(--border)',
+      aspectRatio: '16 / 9',
+    }}>
       <video
         ref={videoRef}
         controls
-        style={{ width: '100%', height: '100%', display: state === 'playing' ? 'block' : 'none' }}
+        style={{ width: '100%', height: '100%', display: playerState === 'playing' ? 'block' : 'none' }}
       />
 
-      {(state === 'loading' || state === 'decrypting') && (
+      {(playerState === 'loading' || playerState === 'decrypting') && (
         <div style={{
-          position: 'absolute',
-          inset: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 12,
-          color: 'var(--text)',
-          background: 'rgba(10,11,15,0.6)',
-          backdropFilter: 'blur(8px)',
+          position: 'absolute', inset: 0,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
+          background: 'rgba(10,11,15,0.6)', backdropFilter: 'blur(8px)',
         }}>
           <Spinner size={20} />
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            {state === 'loading' ? 'Fetching from Swarm…' : 'Decrypting in your browser…'}
+            {playerState === 'loading' ? 'Fetching from Swarm…' : 'Decrypting in your browser…'}
           </span>
         </div>
       )}
 
-      {state === 'playing' && (
+      {playerState === 'error' && (
+        <div style={{
+          position: 'absolute', inset: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: 'var(--text-muted)', fontSize: 13,
+        }}>
+          Could not load video.
+        </div>
+      )}
+
+      {playerState === 'playing' && (
         <div style={{ position: 'absolute', top: 14, left: 14, pointerEvents: 'none' }}>
           <EncryptionBadge state="decrypted">Decrypted in your browser</EncryptionBadge>
         </div>

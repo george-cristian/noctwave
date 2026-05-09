@@ -1,11 +1,13 @@
 'use client'
 export const dynamic = 'force-dynamic'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { useAccount } from 'wagmi'
+import { parseAbi } from 'viem'
 import { AppHeader } from '@/components/AppHeader'
 import { CreatorCard, type Creator } from '@/components/CreatorCard'
+import { Spinner } from '@/components/ui/Spinner'
 
 const MOCK_CREATORS: Creator[] = [
   { ens: 'aurelia.noctwave.eth',  subscribers: 1284, price: 8,  bio: 'Field recordings + essays on disappearing radio frequencies.' },
@@ -41,12 +43,36 @@ const HOW_IT_WORKS = [
   },
 ]
 
+const REGISTRAR_ABI = parseAbi(['function ownerToLabel(address) view returns (string)'])
 type Filter = 'all' | 'affordable' | 'popular'
 
 export default function DiscoveryPage() {
   const router = useRouter()
-  const { isConnected } = useAccount()
+  const { isConnected, address } = useAccount()
   const [filter, setFilter] = useState<Filter>('all')
+  const [creatorLabel, setCreatorLabel] = useState<string | null>(null)
+  const [checkingCreator, setCheckingCreator] = useState(false)
+
+  // Check if connected wallet already has a creator account
+  useEffect(() => {
+    if (!isConnected || !address) { setCreatorLabel(null); return }
+    const registrarAddress = process.env.NEXT_PUBLIC_ENS_REGISTRAR_ADDRESS as `0x${string}`
+    if (!registrarAddress) return
+
+    setCheckingCreator(true)
+    import('@/lib/ensClient').then(({ ensClient }) => {
+      ensClient.readContract({
+        address: registrarAddress,
+        abi: REGISTRAR_ABI,
+        functionName: 'ownerToLabel',
+        args: [address],
+      }).then(label => {
+        setCreatorLabel((label as string) || null)
+      }).catch(() => {
+        setCreatorLabel(null)
+      }).finally(() => setCheckingCreator(false))
+    })
+  }, [isConnected, address])
 
   const filtered = useMemo(() => {
     if (filter === 'affordable') return MOCK_CREATORS.filter(c => c.price < 5)
@@ -87,13 +113,19 @@ export default function DiscoveryPage() {
               <p style={{ fontSize: 18, color: 'var(--text-muted)', margin: 0, maxWidth: 560, lineHeight: 1.55 }}>
                 Encrypted video, direct crypto support, and a feed that never turns you into the product.
               </p>
-              <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
-                {isConnected ? (
+              <div style={{ display: 'flex', gap: 12, marginTop: 4, alignItems: 'center' }}>
+                {!isConnected ? (
+                  <ConnectButton />
+                ) : checkingCreator ? (
+                  <Spinner />
+                ) : creatorLabel ? (
+                  <button className="btn btn-primary btn-lg" onClick={() => router.push(`/creator/${creatorLabel}`)}>
+                    Go to dashboard
+                  </button>
+                ) : (
                   <button className="btn btn-primary btn-lg" onClick={() => router.push('/creator/onboard')}>
                     Become a creator
                   </button>
-                ) : (
-                  <ConnectButton />
                 )}
                 <button className="btn btn-ghost btn-lg" onClick={() => document.getElementById('how-it-works')?.scrollIntoView({ behavior: 'smooth' })}>
                   How it works

@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAccount } from 'wagmi'
+import { parseAbi } from 'viem'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { AppHeader } from '@/components/AppHeader'
 import { Avatar } from '@/components/ui/Avatar'
@@ -68,6 +69,10 @@ function formatUSDC(n: number, places = 7) {
   return n.toFixed(places)
 }
 
+const REGISTRAR_ABI_ONBOARD = parseAbi([
+  'function ownerToLabel(address) view returns (string)',
+])
+
 export default function OnboardPage() {
   const router = useRouter()
   const { address, isConnected } = useAccount()
@@ -75,17 +80,48 @@ export default function OnboardPage() {
   const { setText: setTextRecord } = useENSResolver()
   const { deploy } = useVaultFactory()
 
-  const [step, setStep] = useState(isConnected ? 1 : 0)
+  const [step, setStep] = useState(0)
   const [data, setData] = useState<OnboardData>({ ens: '', price: 8, stealthMeta: '' })
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(true)  // true until registration check completes
 
   const next = () => setStep(s => Math.min(STEPS.length - 1, s + 1))
   const back = () => setStep(s => Math.max(0, s - 1))
 
-  // Auto-advance from connect step when wallet connects
+  // On mount: check if wallet is already registered and redirect immediately
   useEffect(() => {
-    if (isConnected && step === 0) next()
-  }, [isConnected]) // eslint-disable-line react-hooks/exhaustive-deps
+    const registrarAddress = process.env.NEXT_PUBLIC_ENS_REGISTRAR_ADDRESS as `0x${string}`
+
+    if (!isConnected || !address) {
+      setChecking(false)
+      return
+    }
+
+    if (!registrarAddress) {
+      setChecking(false)
+      next() // skip connect step since already connected
+      return
+    }
+
+    import('@/lib/ensClient').then(({ ensClient }) => {
+      ensClient.readContract({
+        address: registrarAddress,
+        abi: REGISTRAR_ABI_ONBOARD,
+        functionName: 'ownerToLabel',
+        args: [address],
+      }).then((label) => {
+        if (label && (label as string).length > 0) {
+          router.replace(`/creator/${label}`)
+        } else {
+          setChecking(false)
+          next() // already connected, skip connect step
+        }
+      }).catch(() => {
+        setChecking(false)
+        next()
+      })
+    })
+  }, [isConnected, address]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleRegister() {
     setBusy(true)
@@ -133,6 +169,17 @@ export default function OnboardPage() {
   }
 
   const perSec = data.price / (30 * 24 * 60 * 60)
+
+  if (checking) {
+    return (
+      <>
+        <AppHeader />
+        <div className="page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+          <Spinner />
+        </div>
+      </>
+    )
+  }
 
   return (
     <>

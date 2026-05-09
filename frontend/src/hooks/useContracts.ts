@@ -1,10 +1,10 @@
 'use client'
-import { useReadContract, useWriteContract } from 'wagmi'
+import { useReadContract, useWriteContract, useSwitchChain } from 'wagmi'
 import { parseAbi } from 'viem'
 import { useQuery } from '@tanstack/react-query'
 import { getTextRecord, getAddressRecord } from '@ensdomains/ensjs/public'
 import { ensClient } from '@/lib/ensClient'
-import { sepolia } from 'viem/chains'
+import { sepolia, baseSepolia } from 'viem/chains'
 
 // Dev A's subdomain registrar on Ethereum Sepolia — grants alice.noctwave.eth
 // Also proxies setText so the registrar (which owns the subnode) can set records
@@ -42,33 +42,43 @@ export function monthlyToFlowRate(usdcPerMonth: number): bigint {
 // ENS subname registration — claims alice.noctwave.eth via Dev A's registrar on Ethereum Sepolia
 export function useENSRegistrar() {
   const { writeContractAsync } = useWriteContract()
+  const { switchChainAsync } = useSwitchChain()
   const registrarAddress = process.env.NEXT_PUBLIC_ENS_REGISTRAR_ADDRESS as `0x${string}` | undefined
 
   return {
-    register: (label: string) => writeContractAsync({
-      chainId: sepolia.id,
-      address: registrarAddress!,
-      abi: REGISTRAR_ABI,
-      functionName: 'register',
-      args: [label],
-    }),
+    register: async (label: string) => {
+      await switchChainAsync({ chainId: sepolia.id })
+      return writeContractAsync({
+        chainId: sepolia.id,
+        address: registrarAddress!,
+        abi: REGISTRAR_ABI,
+        functionName: 'register',
+        args: [label],
+        gas: 500_000n,
+      })
+    },
   }
 }
 
 // ENS text record writes — routes through the registrar which owns the subnode
 export function useENSResolver() {
   const { writeContractAsync } = useWriteContract()
+  const { switchChainAsync } = useSwitchChain()
   const registrarAddress = process.env.NEXT_PUBLIC_ENS_REGISTRAR_ADDRESS as `0x${string}` | undefined
 
   return {
     // label = bare subdomain (e.g. "alice"), not the full ENS name
-    setText: (label: string, key: string, value: string) => writeContractAsync({
-      chainId: sepolia.id,
-      address: registrarAddress!,
-      abi: REGISTRAR_ABI,
-      functionName: 'setTextRecord',
-      args: [label, key, value],
-    }),
+    setText: async (label: string, key: string, value: string) => {
+      await switchChainAsync({ chainId: sepolia.id })
+      return writeContractAsync({
+        chainId: sepolia.id,
+        address: registrarAddress!,
+        abi: REGISTRAR_ABI,
+        functionName: 'setTextRecord',
+        args: [label, key, value],
+        gas: 300_000n,
+      })
+    },
   }
 }
 
@@ -94,15 +104,20 @@ export function useENSAddress(name: string | undefined) {
 
 export function useVaultFactory() {
   const { writeContractAsync } = useWriteContract()
+  const { switchChainAsync } = useSwitchChain()
   const factoryAddress = process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS as `0x${string}` | undefined
 
   return {
-    deploy: (token: `0x${string}`, flowRate: bigint) => writeContractAsync({
-      address: factoryAddress!,
-      abi: VAULT_FACTORY_ABI,
-      functionName: 'deploy',
-      args: [token, flowRate],
-    }),
+    deploy: async (token: `0x${string}`, flowRate: bigint) => {
+      await switchChainAsync({ chainId: baseSepolia.id })
+      return writeContractAsync({
+        chainId: baseSepolia.id,
+        address: factoryAddress!,
+        abi: VAULT_FACTORY_ABI,
+        functionName: 'deploy',
+        args: [token, flowRate],
+      })
+    },
   }
 }
 

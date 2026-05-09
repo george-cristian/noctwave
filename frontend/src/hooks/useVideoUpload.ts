@@ -1,108 +1,83 @@
 'use client'
-import { useState, useRef } from 'react'
-import type { FFmpeg } from '@ffmpeg/ffmpeg'
+import { useState } from 'react'
 
-export type UploadStage = 'idle' | 'transcoding' | 'encrypting' | 'uploading' | 'done'
+export type UploadStage = 'idle' | 'encrypting' | 'uploading' | 'done'
+
+// Extract a JPEG thumbnail from a video file using canvas.
+// Waits for metadata so we know the duration before seeking.
+async function extractThumbnail(file: File): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video')
+    const canvas = document.createElement('canvas')
+    const url = URL.createObjectURL(file)
+
+    video.preload = 'metadata'
+
+    video.onloadedmetadata = () => {
+      // Seek to 10% of duration or 1s, whichever is smaller
+      video.currentTime = Math.min(1, video.duration * 0.1)
+    }
+
+    video.onseeked = () => {
+      if (!video.videoWidth || !video.videoHeight) {
+        URL.revokeObjectURL(url)
+        reject(new Error('Invalid video dimensions'))
+        return
+      }
+      canvas.width = Math.min(video.videoWidth, 854)
+      canvas.height = Math.round(canvas.width * (video.videoHeight / video.videoWidth))
+      canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height)
+      URL.revokeObjectURL(url)
+      canvas.toBlob(async blob => {
+        if (!blob) { reject(new Error('Thumbnail extraction failed')); return }
+        resolve(new Uint8Array(await blob.arrayBuffer()))
+      }, 'image/jpeg', 0.8)
+    }
+
+    video.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Video load failed')) }
+    video.src = url
+    video.load()
+  })
+}
 
 export function useVideoUpload() {
-  const ffmpegRef = useRef<FFmpeg | null>(null)
   const [progress, setProgress] = useState(0)
   const [stage, setStage] = useState<UploadStage>('idle')
-
-  async function loadFFmpeg() {
-    if (ffmpegRef.current?.loaded) return
-
-    // Dynamic import avoids SSR crash
-    const { FFmpeg } = await import('@ffmpeg/ffmpeg')
-    const { toBlobURL } = await import('@ffmpeg/util')
-
-    const ffmpeg = new FFmpeg()
-    ffmpegRef.current = ffmpeg
-
-    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd'
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-    })
-
-    ffmpeg.on('progress', ({ progress: p }) => setProgress(Math.round(p * 100)))
-  }
 
   async function transcodeAndUpload(
     file: File,
     contentKey: Uint8Array,
-    uploadFn: (data: Uint8Array, filename: string) => Promise<string>
+    uploadFn: (data: Uint8Array, filename?: string, contentType?: string) => Promise<string>
   ): Promise<{ manifestCID: string; thumbnailCID: string }> {
-    setStage('transcoding')
-    setProgress(0)
-
-    await loadFFmpeg()
-    const ffmpeg = ffmpegRef.current!
-    const { fetchFile } = await import('@ffmpeg/util')
     const { encryptContent } = await import('@/lib/crypto')
-    const gateway = process.env.NEXT_PUBLIC_SWARM_GATEWAY ?? 'https://api.gateway.ethswarm.org'
 
-    await ffmpeg.writeFile('input.mp4', await fetchFile(file))
-
-    // Extract thumbnail at 1s
-    await ffmpeg.exec(['-i', 'input.mp4', '-ss', '00:00:01', '-vframes', '1', '-q:v', '2', 'thumb.jpg'])
-
-    // Transcode to HLS (single quality tier)
-    await ffmpeg.exec([
-      '-i', 'input.mp4',
-      '-c:v', 'libx264', '-crf', '28', '-preset', 'fast',
-      '-c:a', 'aac',
-      '-hls_time', '6',
-      '-hls_list_size', '0',
-      '-hls_segment_filename', 'segment%03d.ts',
-      'index.m3u8',
-    ])
-
-    setStage('uploading')
-
-    // Upload thumbnail (public, no encryption)
-    const thumbData = await ffmpeg.readFile('thumb.jpg') as Uint8Array
-    const thumbnailCID = await uploadFn(thumbData, 'thumb.jpg')
-
-    // Encrypt and upload each segment
+    // ── Thumbnail (public, unencrypted) ──────────────────────────────────────
     setStage('encrypting')
-    const segmentCIDs: string[] = []
-    let i = 0
-    while (true) {
-      const segName = `segment${String(i).padStart(3, '0')}.ts`
-      let segData: Uint8Array
-      try {
-        segData = await ffmpeg.readFile(segName) as Uint8Array
-      } catch {
-        break
-      }
-
-      const { ciphertext, iv } = await encryptContent(segData, contentKey)
-      // Prepend 12-byte IV to ciphertext
-      const blob = new Uint8Array(12 + ciphertext.byteLength)
-      blob.set(iv, 0)
-      blob.set(ciphertext, 12)
-
-      setStage('uploading')
-      const cid = await uploadFn(blob, segName)
-      segmentCIDs.push(cid)
-      setProgress(Math.round((i / Math.max(segmentCIDs.length + 1, 1)) * 100))
-      i++
+    setProgress(10)
+    let thumbnailCID = ''
+    try {
+      const thumb = await extractThumbnail(file)
+      thumbnailCID = await uploadFn(thumb, 'thumb.jpg', 'image/jpeg')
+    } catch {
+      // Non-fatal — show gradient fallback on cards
     }
+    setProgress(35)
 
-    // Build m3u8 manifest with Swarm gateway URLs
-    const manifest = [
-      '#EXTM3U',
-      '#EXT-X-VERSION:3',
-      '#EXT-X-TARGETDURATION:6',
-      ...segmentCIDs.flatMap(cid => ['#EXTINF:6.0,', `${gateway}/bzz/${cid}`]),
-      '#EXT-X-ENDLIST',
-    ].join('\n')
+    // ── Encrypt raw video ─────────────────────────────────────────────────────
+    const videoData = new Uint8Array(await file.arrayBuffer())
+    const { ciphertext, iv } = await encryptContent(videoData, contentKey)
 
-    const manifestCID = await uploadFn(new TextEncoder().encode(manifest), 'index.m3u8')
+    // Prepend 12-byte IV so the player can split it back out
+    const blob = new Uint8Array(12 + ciphertext.byteLength)
+    blob.set(iv, 0)
+    blob.set(ciphertext, 12)
+    setProgress(65)
 
-    setStage('done')
+    // ── Upload encrypted blob ─────────────────────────────────────────────────
+    setStage('uploading')
+    const manifestCID = await uploadFn(blob, file.name, 'application/octet-stream')
     setProgress(100)
+    setStage('done')
 
     return { manifestCID, thumbnailCID }
   }
