@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__notion__notion-search",
+      "WebFetch(domain:ethglobalskills.vercel.app)",
+      "mcp__notion__notion-fetch",
+      "WebFetch(domain:ethskills.com)",
+      "WebFetch(domain:docs.sourcify.dev)",
+      "WebFetch(domain:www.google.com)",
+      "WebFetch(domain:vitalik.eth.limo)",
+      "WebFetch(domain:ethereum-magicians.org)",
+      "WebFetch(domain:docs.superfluid.finance)",
+      "WebFetch(domain:docs.superfluid.org)",
+      "Bash(sed -i '' -e 's/Sovereign Feed/Noctwave/g' -e s/sovereign-feed/noctwave/g -e s/SovFeedRegistry/NoctwaveRegistry/g -e s/SovFeed/Noctwave/g -e s/sovfeed/noctwave/g /Users/sunnyg/Documents/personal/repos/eth-prague-project/PRD.md)",
+      "Bash(sed -i '' -e 's/Sovereign Feed/Noctwave/g' -e s/sovereign-feed/noctwave/g -e s/SovFeedRegistry/NoctwaveRegistry/g -e s/SovFeed/Noctwave/g -e s/sovfeed/noctwave/g /Users/sunnyg/Documents/personal/repos/eth-prague-project/SOVEREIGN_FEED_v2.md)"
+    ]
+  }
+}

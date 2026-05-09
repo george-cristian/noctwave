@@ -128,10 +128,9 @@ noctwave/
 
 ```
 forge init contracts
-cd contracts
-forge install OpenZeppelin/openzeppelin-contracts
-forge install superfluid-finance/ethereum-contracts
 ```
+
+No forge dependencies needed. The contracts have no external imports — `ISuperToken` is a minimal local interface in `src/interfaces/ISuperToken.sol`.
 
 ---
 
