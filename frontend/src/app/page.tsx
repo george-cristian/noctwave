@@ -4,21 +4,12 @@ import { useMemo, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
 import { useAccount } from 'wagmi'
+import { useQuery } from '@tanstack/react-query'
 import { parseAbi } from 'viem'
 import { AppHeader } from '@/components/AppHeader'
-import { CreatorCard, type Creator } from '@/components/CreatorCard'
+import { CreatorCard } from '@/components/CreatorCard'
 import { Spinner } from '@/components/ui/Spinner'
-
-const MOCK_CREATORS: Creator[] = [
-  { ens: 'aurelia.noctwave.eth',  subscribers: 1284, price: 8,  bio: 'Field recordings + essays on disappearing radio frequencies.' },
-  { ens: 'kovacs.noctwave.eth',   subscribers: 412,  price: 5,  bio: 'Investigative video. Two longforms a month, encrypted end-to-end.' },
-  { ens: 'mira.noctwave.eth',     subscribers: 3890, price: 12, bio: 'Cinematographer. Shot on 16mm, paid by the second.' },
-  { ens: 'nine.noctwave.eth',     subscribers: 178,  price: 3,  bio: 'Daily voice notes from a country that doesn\'t want me to write.' },
-  { ens: 'palette.noctwave.eth',  subscribers: 2104, price: 9,  bio: 'Color theory, slowly. New essay each Sunday.' },
-  { ens: 'salim.noctwave.eth',    subscribers: 631,  price: 6,  bio: 'Architecture lectures, recorded in the buildings themselves.' },
-  { ens: 'tide.noctwave.eth',     subscribers: 5602, price: 15, bio: 'Long-form documentary, one film a quarter.' },
-  { ens: 'verena.noctwave.eth',   subscribers: 219,  price: 4,  bio: 'Synth patches and process tapes. For people who like the wires.' },
-]
+import { fetchCreators } from '@/lib/creators'
 
 const HOW_IT_WORKS = [
   {
@@ -44,7 +35,7 @@ const HOW_IT_WORKS = [
 ]
 
 const REGISTRAR_ABI = parseAbi(['function ownerToLabel(address) view returns (string)'])
-type Filter = 'all' | 'affordable' | 'popular'
+type Filter = 'all' | 'affordable' | 'recent'
 
 export default function DiscoveryPage() {
   const router = useRouter()
@@ -74,11 +65,18 @@ export default function DiscoveryPage() {
     })
   }, [isConnected, address])
 
+  const { data: creators, isLoading: loadingCreators } = useQuery({
+    queryKey: ['creators'],
+    queryFn: fetchCreators,
+    staleTime: 30_000,
+  })
+
   const filtered = useMemo(() => {
-    if (filter === 'affordable') return MOCK_CREATORS.filter(c => c.price < 5)
-    if (filter === 'popular') return MOCK_CREATORS.filter(c => c.subscribers > 1000)
-    return MOCK_CREATORS
-  }, [filter])
+    const list = creators ?? []
+    if (filter === 'affordable') return list.filter(c => c.price > 0 && c.price < 5)
+    if (filter === 'recent') return [...list].sort((a, b) => (b.latestPost?.published_at ?? 0) - (a.latestPost?.published_at ?? 0))
+    return list
+  }, [filter, creators])
 
   return (
     <>
@@ -146,7 +144,7 @@ export default function DiscoveryPage() {
                 {([
                   { id: 'all' as Filter,        label: 'All' },
                   { id: 'affordable' as Filter, label: 'Under $5' },
-                  { id: 'popular' as Filter,    label: 'Most subscribed' },
+                  { id: 'recent' as Filter,     label: 'Newest' },
                 ] as const).map(f => (
                   <button
                     key={f.id}
@@ -164,15 +162,38 @@ export default function DiscoveryPage() {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
-              {filtered.map(c => (
-                <CreatorCard
-                  key={c.ens}
-                  creator={c}
-                  onOpen={() => router.push(`/watch/${c.ens}/post_001`)}
-                />
-              ))}
-            </div>
+            {loadingCreators ? (
+              <div style={{ padding: 48, display: 'flex', justifyContent: 'center' }}>
+                <Spinner />
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="card" style={{ padding: 48, textAlign: 'center', color: 'var(--text-dim)', fontSize: 14 }}>
+                {creators && creators.length === 0
+                  ? 'No creators yet. Be the first — register your name and publish.'
+                  : 'No creators match this filter.'}
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
+                {filtered.map(c => (
+                  <CreatorCard
+                    key={c.ens}
+                    creator={{
+                      ens: c.ens,
+                      price: c.price,
+                      bio: c.bio,
+                      postCount: c.postCount,
+                      thumbnailCid: c.latestPost?.thumbnail_cid,
+                      hasContent: !!c.latestPost,
+                    }}
+                    onOpen={() => {
+                      if (c.latestPost) {
+                        router.push(`/watch/${c.label}/${c.latestPost.id}`)
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </section>
 
           {/* How it works */}
