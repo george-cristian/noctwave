@@ -3,6 +3,8 @@ export const dynamic = 'force-dynamic'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAccount, useSignMessage, useWriteContract } from 'wagmi'
+import { waitForTransactionReceipt } from '@wagmi/core'
+import { wagmiConfig } from '@/lib/wagmi'
 import { keccak256, toBytes, parseAbi } from 'viem'
 import { AppHeader } from '@/components/AppHeader'
 import { Avatar, seededGradient } from '@/components/ui/Avatar'
@@ -133,13 +135,16 @@ function UploadModal({
       // Upload updated feed JSON to Swarm (plain bytes — no Feed signing needed)
       const feedCID = await uploadJson(feed)
 
-      // Store the new CID in the registry so anyone can find this creator's feed
-      await writeContractAsync({
+      // Store the new CID in the registry so anyone can find this creator's feed.
+      // Wait for the transaction to be confirmed — onPublished must not fire until
+      // getTextRecord on the watch page will return the new CID.
+      const txHash = await writeContractAsync({
         address: registrarAddress,
         abi: REGISTRY_ABI,
         functionName: 'setTextRecord',
         args: [ens, 'swarm-feed', feedCID],
       })
+      await waitForTransactionReceipt(wagmiConfig, { hash: txHash })
 
       setPublishing(false)
       setResultCID(manifestCID)
