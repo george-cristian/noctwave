@@ -38,6 +38,7 @@ const ERC20_ABI = parseAbi([
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
   'function balanceOf(address) view returns (uint256)',
+  'function decimals() view returns (uint8)',
   'function mint(address account, uint256 amount)',
 ])
 
@@ -217,7 +218,6 @@ export function useUSDCxWrap() {
       if (balanceX >= targetX) return
 
       const wrapAmountX = targetX - balanceX
-      const wrapAmountUnderlying = wrapAmountX / 10n ** 12n  // USDCx 18d → underlying 6d
 
       // Resolve the actual underlying token from the SuperToken — Superfluid
       // testnets sometimes wrap their own fUSDC rather than Circle USDC, in
@@ -232,6 +232,17 @@ export function useUSDCxWrap() {
         throw new Error('USDCx is not a wrapper super token — cannot upgrade from underlying.')
       }
 
+      // upgrade(amount18) on USDCx pulls `amount18 / 10**(18 - underlyingDecimals)`
+      // of the underlying. fUSDC on Base Sepolia happens to be 18-decimal, so
+      // the divisor is 1; for Circle USDC it would be 1e12. Read decimals to be safe.
+      const underlyingDecimals = await baseClient.readContract({
+        address: underlying,
+        abi: ERC20_ABI,
+        functionName: 'decimals',
+      })
+      const scale = 10n ** BigInt(18 - Number(underlyingDecimals))
+      const wrapAmountUnderlying = wrapAmountX / scale
+
       let usdcBalance = await baseClient.readContract({
         address: underlying,
         abi: ERC20_ABI,
@@ -239,11 +250,11 @@ export function useUSDCxWrap() {
         args: [user],
       })
 
-      // Superfluid's testnet TestToken exposes a public mint(address, uint256)
-      // — call it to top up the demo wallet on the fly. Mint enough for several
-      // wraps so the user doesn't see this prompt on every subscribe.
+      // Superfluid's testnet TestToken exposes a public mint(address, uint256).
+      // Top up generously (50 underlying units) so the user only sees this
+      // prompt once across many subscribes.
       if (usdcBalance < wrapAmountUnderlying) {
-        const mintAmount = (wrapAmountUnderlying - usdcBalance) * 10n
+        const mintAmount = 50n * 10n ** BigInt(Number(underlyingDecimals))
         try {
           await writeContractAsync({
             chainId: baseSepolia.id,
@@ -260,7 +271,7 @@ export function useUSDCxWrap() {
             args: [user],
           })
         } catch (mintErr) {
-          const need = Number(wrapAmountUnderlying) / 1e6
+          const need = Number(wrapAmountUnderlying) / 10 ** Number(underlyingDecimals)
           throw new Error(
             `Need ${need.toFixed(2)} test USDC on Base Sepolia (underlying ${underlying}). ` +
             `Auto-mint failed: ${mintErr instanceof Error ? mintErr.message.split('\n')[0] : 'unknown'}. ` +
@@ -269,7 +280,9 @@ export function useUSDCxWrap() {
         }
       }
       if (usdcBalance < wrapAmountUnderlying) {
-        throw new Error(`Mint succeeded but balance still below ${Number(wrapAmountUnderlying) / 1e6} USDC.`)
+        const have = Number(usdcBalance) / 10 ** Number(underlyingDecimals)
+        const need = Number(wrapAmountUnderlying) / 10 ** Number(underlyingDecimals)
+        throw new Error(`Mint succeeded but balance ${have.toFixed(6)} still below required ${need.toFixed(2)}.`)
       }
 
       const allowance = await baseClient.readContract({
