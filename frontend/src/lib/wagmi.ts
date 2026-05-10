@@ -5,7 +5,7 @@ import {
   walletConnectWallet,
   injectedWallet,
 } from '@rainbow-me/rainbowkit/wallets'
-import { createConfig } from 'wagmi'
+import { createConfig, cookieStorage, createStorage } from 'wagmi'
 import { baseSepolia, sepolia } from 'wagmi/chains'
 import { http } from 'viem'
 
@@ -34,4 +34,8 @@ export const wagmiConfig = createConfig({
     [sepolia.id]: http(),
   },
   ssr: true,
+  // Without explicit storage, ssr: true defaults to noopStorage and the wallet
+  // connection is dropped on every refresh — which makes useIsSubscribed
+  // disable itself (no address) and the page falsely re-renders "Subscribe".
+  storage: createStorage({ storage: cookieStorage }),
 })
