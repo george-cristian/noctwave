@@ -38,6 +38,7 @@ const ERC20_ABI = parseAbi([
   'function approve(address spender, uint256 amount) returns (bool)',
   'function allowance(address owner, address spender) view returns (uint256)',
   'function balanceOf(address) view returns (uint256)',
+  'function mint(address account, uint256 amount)',
 ])
 
 const SUPER_TOKEN_ABI = parseAbi([
@@ -231,20 +232,44 @@ export function useUSDCxWrap() {
         throw new Error('USDCx is not a wrapper super token — cannot upgrade from underlying.')
       }
 
-      const usdcBalance = await baseClient.readContract({
+      let usdcBalance = await baseClient.readContract({
         address: underlying,
         abi: ERC20_ABI,
         functionName: 'balanceOf',
         args: [user],
       })
+
+      // Superfluid's testnet TestToken exposes a public mint(address, uint256)
+      // — call it to top up the demo wallet on the fly. Mint enough for several
+      // wraps so the user doesn't see this prompt on every subscribe.
       if (usdcBalance < wrapAmountUnderlying) {
-        const need = Number(wrapAmountUnderlying) / 1e6
-        const have = Number(usdcBalance) / 1e6
-        throw new Error(
-          `Insufficient underlying USDC (${underlying}) on Base Sepolia. ` +
-          `Need ${need.toFixed(2)}, have ${have.toFixed(2)}. ` +
-          `Mint test USDC from the Superfluid faucet or via the underlying token contract.`
-        )
+        const mintAmount = (wrapAmountUnderlying - usdcBalance) * 10n
+        try {
+          await writeContractAsync({
+            chainId: baseSepolia.id,
+            address: underlying,
+            abi: ERC20_ABI,
+            functionName: 'mint',
+            args: [user, mintAmount],
+            gas: 200_000n,
+          })
+          usdcBalance = await baseClient.readContract({
+            address: underlying,
+            abi: ERC20_ABI,
+            functionName: 'balanceOf',
+            args: [user],
+          })
+        } catch (mintErr) {
+          const need = Number(wrapAmountUnderlying) / 1e6
+          throw new Error(
+            `Need ${need.toFixed(2)} test USDC on Base Sepolia (underlying ${underlying}). ` +
+            `Auto-mint failed: ${mintErr instanceof Error ? mintErr.message.split('\n')[0] : 'unknown'}. ` +
+            `Mint manually from the Superfluid console or the token contract.`
+          )
+        }
+      }
+      if (usdcBalance < wrapAmountUnderlying) {
+        throw new Error(`Mint succeeded but balance still below ${Number(wrapAmountUnderlying) / 1e6} USDC.`)
       }
 
       const allowance = await baseClient.readContract({
