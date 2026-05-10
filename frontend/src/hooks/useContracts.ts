@@ -43,6 +43,7 @@ const ERC20_ABI = parseAbi([
 const SUPER_TOKEN_ABI = parseAbi([
   'function upgrade(uint256 amount)',
   'function balanceOf(address) view returns (uint256)',
+  'function getUnderlyingToken() view returns (address)',
 ])
 
 export function monthlyToFlowRate(usdcPerMonth: number): bigint {
@@ -163,6 +164,7 @@ export function useCFAForwarder() {
         flowRate,
         '0x',
       ],
+      gas: 1_000_000n,
     })
   }
 
@@ -179,6 +181,7 @@ export function useCFAForwarder() {
         receiverVault,
         '0x',
       ],
+      gas: 800_000n,
     })
   }
 
@@ -197,7 +200,7 @@ export function useUSDCxWrap() {
 
   return {
     ensureWrapped: async (user: `0x${string}`, monthlyPrice: number) => {
-      if (!usdc || !usdcx) throw new Error('USDC/USDCx env vars missing')
+      if (!usdcx) throw new Error('USDCx env var missing')
       await switchChainAsync({ chainId: baseSepolia.id })
 
       // Target buffer: one month of stream — covers Superfluid's 4-hour deposit
@@ -213,10 +216,23 @@ export function useUSDCxWrap() {
       if (balanceX >= targetX) return
 
       const wrapAmountX = targetX - balanceX
-      const wrapAmountUnderlying = wrapAmountX / 10n ** 12n  // USDCx 18d → USDC 6d
+      const wrapAmountUnderlying = wrapAmountX / 10n ** 12n  // USDCx 18d → underlying 6d
+
+      // Resolve the actual underlying token from the SuperToken — Superfluid
+      // testnets sometimes wrap their own fUSDC rather than Circle USDC, in
+      // which case the env's USDC address is wrong and the wrap would silently
+      // fail. Use whatever the contract says.
+      const underlying = await baseClient.readContract({
+        address: usdcx,
+        abi: SUPER_TOKEN_ABI,
+        functionName: 'getUnderlyingToken',
+      })
+      if (!underlying || underlying === '0x0000000000000000000000000000000000000000') {
+        throw new Error('USDCx is not a wrapper super token — cannot upgrade from underlying.')
+      }
 
       const usdcBalance = await baseClient.readContract({
-        address: usdc,
+        address: underlying,
         abi: ERC20_ABI,
         functionName: 'balanceOf',
         args: [user],
@@ -225,25 +241,26 @@ export function useUSDCxWrap() {
         const need = Number(wrapAmountUnderlying) / 1e6
         const have = Number(usdcBalance) / 1e6
         throw new Error(
-          `Insufficient test USDC on Base Sepolia. Need ${need.toFixed(2)}, have ${have.toFixed(2)}. ` +
-          `Get test USDC from a Base Sepolia faucet (e.g. faucet.circle.com).`
+          `Insufficient underlying USDC (${underlying}) on Base Sepolia. ` +
+          `Need ${need.toFixed(2)}, have ${have.toFixed(2)}. ` +
+          `Mint test USDC from the Superfluid faucet or via the underlying token contract.`
         )
       }
 
       const allowance = await baseClient.readContract({
-        address: usdc,
+        address: underlying,
         abi: ERC20_ABI,
         functionName: 'allowance',
         args: [user, usdcx],
       })
       if (allowance < wrapAmountUnderlying) {
-        // Approve a generous amount so future top-ups don't need re-approval
         await writeContractAsync({
           chainId: baseSepolia.id,
-          address: usdc,
+          address: underlying,
           abi: ERC20_ABI,
           functionName: 'approve',
           args: [usdcx, wrapAmountUnderlying * 100n],
+          gas: 100_000n,
         })
       }
 
@@ -253,6 +270,7 @@ export function useUSDCxWrap() {
         abi: SUPER_TOKEN_ABI,
         functionName: 'upgrade',
         args: [wrapAmountX],
+        gas: 500_000n,
       })
     },
   }
@@ -305,6 +323,7 @@ export function useSubscriptionVault(vaultAddress?: `0x${string}`) {
         abi: VAULT_ABI,
         functionName: 'recordSubscriber',
         args: [subscriber, active],
+        gas: 200_000n,
       })
     },
   }
