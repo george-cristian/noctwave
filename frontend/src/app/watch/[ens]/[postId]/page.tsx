@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic'
 import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAccount, useSignMessage } from 'wagmi'
-import { parseAbi } from 'viem'
+import { parseAbi, keccak256, toBytes } from 'viem'
 import { AppHeader } from '@/components/AppHeader'
 import { Avatar } from '@/components/ui/Avatar'
 import { VideoPlayer } from '@/components/VideoPlayer'
@@ -13,7 +13,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { useIsSubscribed, useCreatorVault } from '@/hooks/useContracts'
 import { deriveSharedSecret, decryptKey } from '@/lib/crypto'
 import { fetchEncryptedKey } from '@/lib/keyDelivery'
-import { feedReadJson, TOPIC_NAMES } from '@/lib/swarmClient'
+import { downloadJson } from '@/lib/swarmClient'
 import { ensClient } from '@/lib/ensClient'
 import type { PostMetadata, CreatorFeed } from '@/lib/types'
 
@@ -25,15 +25,6 @@ const REGISTRAR_ABI = parseAbi([
 ])
 
 function formatUSDC(n: number, places = 7) { return n.toFixed(places) }
-
-// Creator's content key is stored in localStorage during upload
-function loadCreatorKey(manifestCID: string): Uint8Array | null {
-  try {
-    const b64 = localStorage.getItem(`noctwave-key-${manifestCID}`)
-    if (!b64) return null
-    return Uint8Array.from(atob(b64), c => c.charCodeAt(0))
-  } catch { return null }
-}
 
 export default function WatchPage() {
   const params = useParams()
@@ -84,8 +75,16 @@ export default function WatchPage() {
         }) as string
         if (!cancelled) setMonthlyPrice(Number(priceStr) || 0)
 
-        // Read creator's Swarm Feed — primary source of truth
-        const feed = await feedReadJson<CreatorFeed>(TOPIC_NAMES.CONTENT_ROOT, addr)
+        // Read creator's feed: CID from registry text record, content from Swarm
+        const feedCID = await ensClient.readContract({
+          address: registrarAddress,
+          abi: REGISTRAR_ABI,
+          functionName: 'getTextRecord',
+          args: [ens, 'swarm-feed'],
+        }) as string
+
+        if (!feedCID || cancelled) return
+        const feed = await downloadJson<CreatorFeed>(feedCID)
         const found = feed.posts.find(p => p.id === postId)
         if (!cancelled) setPost(found ?? null)
       } catch (err) {
@@ -99,12 +98,23 @@ export default function WatchPage() {
     return () => { cancelled = true }
   }, [ens, postId])
 
-  // If the viewer is the creator, load their content key directly from localStorage
+  // If the viewer is the creator, decrypt their own content key using a wallet signature.
+  // The encrypted key was stored in the post metadata on Swarm during upload — no localStorage.
   useEffect(() => {
-    if (!isCreator || !post) return
-    const key = loadCreatorKey(post.manifest_cid)
-    if (key) setContentKey(key)
-  }, [isCreator, post])
+    if (!isCreator || !post?.creator_encrypted_key) return
+    async function loadCreatorKey() {
+      try {
+        const sig = await signMessageAsync({ message: `noctwave-creator-key:${post!.manifest_cid}` })
+        const creatorSecret = toBytes(keccak256(toBytes(sig as `0x${string}`)))
+        const encryptedKeyBytes = Uint8Array.from(atob(post!.creator_encrypted_key!), c => c.charCodeAt(0))
+        const key = await decryptKey(encryptedKeyBytes, creatorSecret)
+        setContentKey(key)
+      } catch (err) {
+        console.error('Creator key decrypt failed:', err)
+      }
+    }
+    loadCreatorKey()
+  }, [isCreator, post]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: vaultAddress } = useCreatorVault(creatorAddress ?? undefined)
   const isSubscribed = useIsSubscribed(address, vaultAddress as `0x${string}` | undefined)

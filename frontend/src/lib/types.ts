@@ -5,6 +5,7 @@ export interface PostMetadata {
   content_type: 'video' | 'text' | 'image'
   thumbnail_cid: string    // public, unencrypted
   manifest_cid: string     // encrypted video blob CID
+  creator_encrypted_key?: string  // content key encrypted with creator's wallet sig, base64
   published_at: number     // unix ms
   paid: boolean
   creator_address: string

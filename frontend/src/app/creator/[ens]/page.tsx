@@ -2,34 +2,25 @@
 export const dynamic = 'force-dynamic'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useAccount } from 'wagmi'
+import { useAccount, useSignMessage, useWriteContract } from 'wagmi'
+import { keccak256, toBytes, parseAbi } from 'viem'
 import { AppHeader } from '@/components/AppHeader'
 import { Avatar, seededGradient } from '@/components/ui/Avatar'
 import { EncryptionBadge } from '@/components/ui/EncryptionBadge'
 import { Spinner } from '@/components/ui/Spinner'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
 import { uploadToSwarm } from '@/lib/uploadHelper'
-import { generateContentKey } from '@/lib/crypto'
-import { feedWriteJson, feedReadJson, makeFeedSigner, TOPIC_NAMES, GATEWAY } from '@/lib/swarmClient'
+import { generateContentKey, encryptKey } from '@/lib/crypto'
+import { uploadJson, downloadJson, GATEWAY } from '@/lib/swarmClient'
+import { ensClient } from '@/lib/ensClient'
 import type { PostMetadata, CreatorFeed } from '@/lib/types'
 
+const REGISTRY_ABI = parseAbi([
+  'function setTextRecord(string name, string key, string value) external',
+  'function getTextRecord(string name, string key) view returns (string)',
+])
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function storeContentKey(manifestCID: string, key: Uint8Array) {
-  localStorage.setItem(`noctwave-key-${manifestCID}`, btoa(String.fromCharCode(...key)))
-}
-
-// LocalStorage backup so posts survive across sessions regardless of Swarm read success
-function saveFeedLocally(address: string, feed: CreatorFeed) {
-  localStorage.setItem(`noctwave-feed-${address.toLowerCase()}`, JSON.stringify(feed))
-}
-
-function loadFeedLocally(address: string): CreatorFeed | null {
-  try {
-    const raw = localStorage.getItem(`noctwave-feed-${address.toLowerCase()}`)
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
-}
 
 function timeAgo(ts: number): string {
   const secs = Math.floor((Date.now() - ts) / 1000)
@@ -60,14 +51,18 @@ function StageDot({ state }: { state: 'active' | 'done' | 'pending' }) {
 
 function UploadModal({
   address,
+  ens,
   onClose,
   onPublished,
 }: {
   address: string
+  ens: string
   onClose: () => void
   onPublished: (post: PostMetadata) => void
 }) {
   const { transcodeAndUpload, progress, stage } = useVideoUpload()
+  const { signMessageAsync } = useSignMessage()
+  const { writeContractAsync } = useWriteContract()
   const [file, setFile] = useState<File | null>(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -90,6 +85,13 @@ function UploadModal({
 
       setPublishing(true)
 
+      // Encrypt the content key with a deterministic wallet signature so the creator
+      // can decrypt their own video from any device without localStorage.
+      const sig = await signMessageAsync({ message: `noctwave-creator-key:${manifestCID}` })
+      const creatorSecret = toBytes(keccak256(toBytes(sig as `0x${string}`)))
+      const encryptedKeyBytes = await encryptKey(contentKey, creatorSecret)
+      const creator_encrypted_key = btoa(String.fromCharCode(...encryptedKeyBytes))
+
       const post: PostMetadata = {
         id: manifestCID,
         title: title.trim() || file.name,
@@ -97,30 +99,47 @@ function UploadModal({
         content_type: 'video',
         thumbnail_cid: thumbnailCID,
         manifest_cid: manifestCID,
+        creator_encrypted_key,
         published_at: Date.now(),
         paid: true,
         creator_address: address,
         views: 0,
       }
 
-      // Read existing feed — try Swarm first, fall back to localStorage
+      const registrarAddress = process.env.NEXT_PUBLIC_ENS_REGISTRAR_ADDRESS as `0x${string}`
+
+      // Read existing feed: get current CID from the registry text record, then fetch from Swarm
       let feed: CreatorFeed
-      try {
-        feed = await feedReadJson<CreatorFeed>(TOPIC_NAMES.CONTENT_ROOT, address)
-      } catch {
-        feed = loadFeedLocally(address) ?? { version: 1, creator_address: address, posts: [], updated_at: 0 }
+      const existingCID = await ensClient.readContract({
+        address: registrarAddress,
+        abi: REGISTRY_ABI,
+        functionName: 'getTextRecord',
+        args: [ens, 'swarm-feed'],
+      }) as string
+
+      if (existingCID) {
+        try {
+          feed = await downloadJson<CreatorFeed>(existingCID)
+        } catch {
+          feed = { version: 1, creator_address: address, posts: [], updated_at: 0 }
+        }
+      } else {
+        feed = { version: 1, creator_address: address, posts: [], updated_at: 0 }
       }
 
       feed.posts.unshift(post)
       feed.updated_at = Date.now()
 
-      // Save locally first so it's available even if Swarm write fails
-      saveFeedLocally(address, feed)
+      // Upload updated feed JSON to Swarm (plain bytes — no Feed signing needed)
+      const feedCID = await uploadJson(feed)
 
-      const signer = await makeFeedSigner(address)
-      await feedWriteJson(TOPIC_NAMES.CONTENT_ROOT, feed, signer)
-
-      storeContentKey(manifestCID, contentKey)
+      // Store the new CID in the registry so anyone can find this creator's feed
+      await writeContractAsync({
+        address: registrarAddress,
+        abi: REGISTRY_ABI,
+        functionName: 'setTextRecord',
+        args: [ens, 'swarm-feed', feedCID],
+      })
 
       setPublishing(false)
       setResultCID(manifestCID)
@@ -317,31 +336,30 @@ export default function CreatorDashboard() {
   useEffect(() => {
     if (!address) return
     let cancelled = false
-
-    // Show localStorage posts immediately while Swarm loads
-    const local = loadFeedLocally(address)
-    if (local && local.posts.length > 0) {
-      setPosts(local.posts)
-      setLoadingPosts(false)
-    }
+    const registrarAddress = process.env.NEXT_PUBLIC_ENS_REGISTRAR_ADDRESS as `0x${string}`
 
     async function loadFeed() {
       try {
-        const feed = await feedReadJson<CreatorFeed>(TOPIC_NAMES.CONTENT_ROOT, address!)
-        if (!cancelled) {
-          setPosts(feed.posts)
-          saveFeedLocally(address!, feed)
-        }
-      } catch (err) {
-        console.warn('[dashboard] Swarm feed read failed:', err)
-        // localStorage already shown above as immediate fallback
+        const feedCID = await ensClient.readContract({
+          address: registrarAddress,
+          abi: REGISTRY_ABI,
+          functionName: 'getTextRecord',
+          args: [ens, 'swarm-feed'],
+        }) as string
+
+        if (!feedCID) { if (!cancelled) setPosts([]); return }
+
+        const feed = await downloadJson<CreatorFeed>(feedCID)
+        if (!cancelled) setPosts(feed.posts)
+      } catch {
+        if (!cancelled) setPosts([])
       } finally {
         if (!cancelled) setLoadingPosts(false)
       }
     }
     loadFeed()
     return () => { cancelled = true }
-  }, [address])
+  }, [address, ens])
 
   function handlePublished(post: PostMetadata) {
     setPosts(prev => [post, ...prev])
@@ -416,6 +434,7 @@ export default function CreatorDashboard() {
       {showUpload && address && (
         <UploadModal
           address={address}
+          ens={ens}
           onClose={() => setShowUpload(false)}
           onPublished={handlePublished}
         />
