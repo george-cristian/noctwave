@@ -33,6 +33,7 @@ export function SubscribeButton({ vaultAddress, monthlyPrice, state, onSuccess, 
       await openStream(vaultAddress, flowRate)
       await recordSubscriber(address, true).catch(() => {}) // best-effort
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
+      queryClient.invalidateQueries({ queryKey: ['readContract'] })
       onSuccess?.()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -45,6 +46,7 @@ export function SubscribeButton({ vaultAddress, monthlyPrice, state, onSuccess, 
     try {
       await closeStream(vaultAddress)
       queryClient.invalidateQueries({ queryKey: ['subscriptions'] })
+      queryClient.invalidateQueries({ queryKey: ['readContract'] })
       onStop?.()
     } catch (err) {
       console.error('Stop stream failed:', err)

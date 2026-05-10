@@ -80,3 +80,13 @@ export async function decryptContent(
 export function generateContentKey(): Uint8Array {
   return crypto.getRandomValues(new Uint8Array(32))
 }
+
+// Demo-only deterministic secret used for subscriber decryption when the
+// per-subscriber key feed isn't populated yet. Both creator and subscriber
+// derive the same value purely from public inputs. The on-chain Superfluid
+// stream check is the actual access gate; production should swap this out for
+// stealth-address ECDH so possession of the postCID alone is insufficient.
+export function deriveDemoSubscriberSecret(creatorAddress: string, postCID: string): Uint8Array {
+  const input = `noctwave-demo-key:${creatorAddress.toLowerCase()}:${postCID}`
+  return hexToBytes(keccak256(stringToBytes(input)))
+}

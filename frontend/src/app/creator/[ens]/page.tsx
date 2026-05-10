@@ -9,9 +9,12 @@ import { AppHeader } from '@/components/AppHeader'
 import { Avatar, seededGradient } from '@/components/ui/Avatar'
 import { EncryptionBadge } from '@/components/ui/EncryptionBadge'
 import { Spinner } from '@/components/ui/Spinner'
+import { StreamBalance } from '@/components/StreamBalance'
+import { SubscribeButton } from '@/components/SubscribeButton'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
+import { useCreatorVault, useIsSubscribed } from '@/hooks/useContracts'
 import { uploadToSwarm } from '@/lib/uploadHelper'
-import { generateContentKey, encryptKey } from '@/lib/crypto'
+import { generateContentKey, encryptKey, deriveDemoSubscriberSecret } from '@/lib/crypto'
 import { uploadJson, downloadJson, GATEWAY } from '@/lib/swarmClient'
 import { ensClient } from '@/lib/ensClient'
 import type { PostMetadata, CreatorFeed } from '@/lib/types'
@@ -95,6 +98,13 @@ function UploadModal({
       const encryptedKeyBytes = await encryptKey(contentKey, creatorSecret)
       const creator_encrypted_key = btoa(String.fromCharCode(...encryptedKeyBytes))
 
+      // Demo-only subscriber key: encrypt the content key with a deterministic
+      // per-post secret so subscribers' browsers can decrypt without waiting on
+      // a per-subscriber key feed. The Superfluid stream is the real gate.
+      const demoSecret = deriveDemoSubscriberSecret(address, manifestCID)
+      const demoEncryptedBytes = await encryptKey(contentKey, demoSecret)
+      const subscriber_demo_key = btoa(String.fromCharCode(...demoEncryptedBytes))
+
       const post: PostMetadata = {
         id: manifestCID,
         title: title.trim() || file.name,
@@ -103,6 +113,7 @@ function UploadModal({
         thumbnail_cid: thumbnailCID,
         manifest_cid: manifestCID,
         creator_encrypted_key,
+        subscriber_demo_key,
         published_at: Date.now(),
         paid: true,
         creator_address: address,
@@ -339,8 +350,15 @@ export default function CreatorDashboard() {
   const [posts, setPosts] = useState<PostMetadata[]>([])
   const [loadingPosts, setLoadingPosts] = useState(true)
   const [creatorAddress, setCreatorAddress] = useState<`0x${string}` | null>(null)
+  const [monthlyPrice, setMonthlyPrice] = useState(0)
+  const [streamSince, setStreamSince] = useState<Date | undefined>()
+  const [optimisticSub, setOptimisticSub] = useState(false)
 
   const isOwner = !!(address && creatorAddress && address.toLowerCase() === creatorAddress.toLowerCase())
+
+  const { data: vaultAddress } = useCreatorVault(creatorAddress ?? undefined)
+  const onChainSubscribed = useIsSubscribed(address, vaultAddress as `0x${string}` | undefined)
+  const isSubscribed = onChainSubscribed || optimisticSub
 
   useEffect(() => {
     let cancelled = false
@@ -348,7 +366,7 @@ export default function CreatorDashboard() {
 
     async function load() {
       try {
-        const [owner, feedCID] = await Promise.all([
+        const [owner, feedCID, priceStr] = await Promise.all([
           ensClient.readContract({
             address: registrarAddress,
             abi: REGISTRY_ABI,
@@ -361,10 +379,17 @@ export default function CreatorDashboard() {
             functionName: 'getTextRecord',
             args: [ens, 'swarm-feed'],
           }) as Promise<string>,
+          ensClient.readContract({
+            address: registrarAddress,
+            abi: REGISTRY_ABI,
+            functionName: 'getTextRecord',
+            args: [ens, 'price'],
+          }) as Promise<string>,
         ])
 
         if (cancelled) return
         setCreatorAddress(owner && owner !== '0x0000000000000000000000000000000000000000' ? owner : null)
+        setMonthlyPrice(Number(priceStr) || 0)
 
         if (!feedCID) { setPosts([]); return }
 
@@ -379,6 +404,14 @@ export default function CreatorDashboard() {
     load()
     return () => { cancelled = true }
   }, [ens])
+
+  useEffect(() => {
+    if (isSubscribed && !streamSince) setStreamSince(new Date())
+    if (!isSubscribed && streamSince) setStreamSince(undefined)
+  }, [isSubscribed, streamSince])
+
+  function formatUSDC(n: number, places = 7) { return n.toFixed(places) }
+  const perSec = monthlyPrice / (30 * 24 * 60 * 60)
 
   function handlePublished(post: PostMetadata) {
     setPosts(prev => [post, ...prev])
@@ -419,40 +452,133 @@ export default function CreatorDashboard() {
             </div>
           )}
 
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
-            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, letterSpacing: '-0.01em' }}>Posts</h2>
-            <span className="num" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-              {loadingPosts ? '…' : `${posts.length} published`}
-            </span>
+          <div
+            className="creator-grid"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: isOwner ? '1fr' : 'minmax(0, 1fr) 340px',
+              gap: 32,
+              alignItems: 'start',
+            }}
+          >
+            <div>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
+                <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, letterSpacing: '-0.01em' }}>Posts</h2>
+                <span className="num" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
+                  {loadingPosts ? '…' : `${posts.length} published`}
+                </span>
+              </div>
+
+              {loadingPosts && (
+                <div style={{ padding: 48, display: 'flex', justifyContent: 'center' }}>
+                  <Spinner />
+                </div>
+              )}
+
+              {!loadingPosts && posts.length === 0 && (
+                <div className="card" style={{ padding: 48, textAlign: 'center', color: 'var(--text-dim)', fontSize: 14 }}>
+                  {isOwner ? 'No posts yet. Upload your first video.' : 'This creator hasn\'t published anything yet.'}
+                </div>
+              )}
+
+              {!loadingPosts && posts.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
+                  {posts.map(post => (
+                    <PostCard
+                      key={post.id}
+                      post={post}
+                      ens={ens}
+                      onOpen={() => router.push(`/watch/${ens}/${post.id}`)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {!isOwner && (
+              <aside style={{ display: 'flex', flexDirection: 'column', gap: 16, position: 'sticky', top: 84 }}>
+                {!isSubscribed ? (
+                  <div className="card" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 18 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <span className="eyebrow">Subscription</span>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                        <span className="num display" style={{ fontSize: 48, color: 'var(--text)' }}>
+                          {monthlyPrice > 0 ? `$${monthlyPrice}` : '—'}
+                        </span>
+                        <span style={{ color: 'var(--text-muted)', fontSize: 15 }}>/ month</span>
+                      </div>
+                    </div>
+
+                    <SubscribeButton
+                      vaultAddress={(vaultAddress as `0x${string}`) ?? '0x0000000000000000000000000000000000000000'}
+                      monthlyPrice={monthlyPrice}
+                      state="idle"
+                      onSuccess={() => {
+                        setOptimisticSub(true)
+                        setStreamSince(new Date())
+                      }}
+                    />
+
+                    <div style={{ padding: 14, background: 'var(--bg-overlay)', borderRadius: 'var(--r-6)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {[
+                        { label: 'Per second', value: monthlyPrice ? `$${formatUSDC(perSec)}` : '—' },
+                        { label: 'Network', value: 'Base Sepolia' },
+                        { label: 'Storage', value: 'Swarm' },
+                      ].map(({ label, value }) => (
+                        <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+                          <span className="num" style={{ fontSize: 13, color: 'var(--text)' }}>{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                      One stream unlocks every video. Charged per second; cancel any time.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                    {address && vaultAddress && (
+                      <StreamBalance
+                        sender={address}
+                        receiver={vaultAddress as `0x${string}`}
+                        since={streamSince}
+                      />
+                    )}
+                    <SubscribeButton
+                      vaultAddress={(vaultAddress as `0x${string}`) ?? '0x0000000000000000000000000000000000000000'}
+                      monthlyPrice={monthlyPrice}
+                      state="streaming"
+                      onStop={() => {
+                        setOptimisticSub(false)
+                        setStreamSince(undefined)
+                      }}
+                    />
+                    <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {[
+                        { label: 'Flow → creator', value: ens },
+                        { label: 'Cipher', value: 'AES-256-GCM' },
+                        { label: 'Storage', value: 'Swarm' },
+                      ].map(({ label, value }) => (
+                        <div key={label} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{label}</span>
+                          <span className="num" style={{ fontSize: 13, color: 'var(--text)' }}>{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </aside>
+            )}
           </div>
-
-          {loadingPosts && (
-            <div style={{ padding: 48, display: 'flex', justifyContent: 'center' }}>
-              <Spinner />
-            </div>
-          )}
-
-          {!loadingPosts && posts.length === 0 && (
-            <div className="card" style={{ padding: 48, textAlign: 'center', color: 'var(--text-dim)', fontSize: 14 }}>
-              {isOwner ? 'No posts yet. Upload your first video.' : 'This creator hasn\'t published anything yet.'}
-            </div>
-          )}
-
-          {!loadingPosts && posts.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
-              {posts.map(post => (
-                <PostCard
-                  key={post.id}
-                  post={post}
-                  ens={ens}
-                  onOpen={() => router.push(`/watch/${ens}/${post.id}`)}
-                />
-              ))}
-            </div>
-          )}
 
         </div>
       </div>
+
+      <style>{`
+        @media (max-width: 980px) {
+          .creator-grid { grid-template-columns: 1fr !important; }
+        }
+      `}</style>
 
       {showUpload && address && isOwner && (
         <UploadModal
