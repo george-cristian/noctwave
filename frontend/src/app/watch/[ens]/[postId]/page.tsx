@@ -11,7 +11,7 @@ import { StreamBalance } from '@/components/StreamBalance'
 import { SubscribeButton } from '@/components/SubscribeButton'
 import { Spinner } from '@/components/ui/Spinner'
 import { useIsSubscribed, useCreatorVault } from '@/hooks/useContracts'
-import { deriveSharedSecret, decryptKey } from '@/lib/crypto'
+import { deriveSharedSecret, decryptKey, deriveDemoSubscriberSecret } from '@/lib/crypto'
 import { fetchEncryptedKey } from '@/lib/keyDelivery'
 import { downloadJson } from '@/lib/swarmClient'
 import { ensClient } from '@/lib/ensClient'
@@ -132,6 +132,18 @@ export default function WatchPage() {
   async function handleDecrypt() {
     if (!address || !post || !creatorAddress) return
     try {
+      // Demo path: post metadata carries an encrypted content key under a
+      // deterministic per-post secret. No wallet prompt, no Swarm Feed lookup.
+      if (post.subscriber_demo_key) {
+        const demoSecret = deriveDemoSubscriberSecret(creatorAddress, post.manifest_cid)
+        const encryptedBytes = Uint8Array.from(atob(post.subscriber_demo_key), c => c.charCodeAt(0))
+        const key = await decryptKey(encryptedBytes, demoSecret)
+        setContentKey(key)
+        return
+      }
+
+      // Production path (not yet active): fetch per-subscriber encrypted key
+      // from the creator's Swarm Feed and decrypt via wallet-signed shared secret.
       const encryptedKey = await fetchEncryptedKey({
         creatorAddress,
         subscriberAddress: address,

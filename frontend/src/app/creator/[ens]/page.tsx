@@ -14,7 +14,7 @@ import { SubscribeButton } from '@/components/SubscribeButton'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
 import { useCreatorVault, useIsSubscribed } from '@/hooks/useContracts'
 import { uploadToSwarm } from '@/lib/uploadHelper'
-import { generateContentKey, encryptKey } from '@/lib/crypto'
+import { generateContentKey, encryptKey, deriveDemoSubscriberSecret } from '@/lib/crypto'
 import { uploadJson, downloadJson, GATEWAY } from '@/lib/swarmClient'
 import { ensClient } from '@/lib/ensClient'
 import type { PostMetadata, CreatorFeed } from '@/lib/types'
@@ -98,6 +98,13 @@ function UploadModal({
       const encryptedKeyBytes = await encryptKey(contentKey, creatorSecret)
       const creator_encrypted_key = btoa(String.fromCharCode(...encryptedKeyBytes))
 
+      // Demo-only subscriber key: encrypt the content key with a deterministic
+      // per-post secret so subscribers' browsers can decrypt without waiting on
+      // a per-subscriber key feed. The Superfluid stream is the real gate.
+      const demoSecret = deriveDemoSubscriberSecret(address, manifestCID)
+      const demoEncryptedBytes = await encryptKey(contentKey, demoSecret)
+      const subscriber_demo_key = btoa(String.fromCharCode(...demoEncryptedBytes))
+
       const post: PostMetadata = {
         id: manifestCID,
         title: title.trim() || file.name,
@@ -106,6 +113,7 @@ function UploadModal({
         thumbnail_cid: thumbnailCID,
         manifest_cid: manifestCID,
         creator_encrypted_key,
+        subscriber_demo_key,
         published_at: Date.now(),
         paid: true,
         creator_address: address,
@@ -344,11 +352,13 @@ export default function CreatorDashboard() {
   const [creatorAddress, setCreatorAddress] = useState<`0x${string}` | null>(null)
   const [monthlyPrice, setMonthlyPrice] = useState(0)
   const [streamSince, setStreamSince] = useState<Date | undefined>()
+  const [optimisticSub, setOptimisticSub] = useState(false)
 
   const isOwner = !!(address && creatorAddress && address.toLowerCase() === creatorAddress.toLowerCase())
 
   const { data: vaultAddress } = useCreatorVault(creatorAddress ?? undefined)
-  const isSubscribed = useIsSubscribed(address, vaultAddress as `0x${string}` | undefined)
+  const onChainSubscribed = useIsSubscribed(address, vaultAddress as `0x${string}` | undefined)
+  const isSubscribed = onChainSubscribed || optimisticSub
 
   useEffect(() => {
     let cancelled = false
@@ -503,6 +513,10 @@ export default function CreatorDashboard() {
                       vaultAddress={(vaultAddress as `0x${string}`) ?? '0x0000000000000000000000000000000000000000'}
                       monthlyPrice={monthlyPrice}
                       state="idle"
+                      onSuccess={() => {
+                        setOptimisticSub(true)
+                        setStreamSince(new Date())
+                      }}
                     />
 
                     <div style={{ padding: 14, background: 'var(--bg-overlay)', borderRadius: 'var(--r-6)', border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -534,6 +548,10 @@ export default function CreatorDashboard() {
                       vaultAddress={(vaultAddress as `0x${string}`) ?? '0x0000000000000000000000000000000000000000'}
                       monthlyPrice={monthlyPrice}
                       state="streaming"
+                      onStop={() => {
+                        setOptimisticSub(false)
+                        setStreamSince(undefined)
+                      }}
                     />
                     <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
                       {[

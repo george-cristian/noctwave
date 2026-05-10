@@ -139,6 +139,7 @@ export function useVaultFactory() {
 export function useCreatorVault(creatorAddress?: `0x${string}`) {
   const factoryAddress = process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS as `0x${string}` | undefined
   return useReadContract({
+    chainId: baseSepolia.id,
     address: factoryAddress,
     abi: VAULT_FACTORY_ABI,
     functionName: 'creatorVault',
@@ -320,6 +321,7 @@ export function useFlowRate(
 ) {
   const usdcxAddress = process.env.NEXT_PUBLIC_USDCX_ADDRESS as `0x${string}` | undefined
   return useReadContract({
+    chainId: baseSepolia.id,
     address: CFA_ADDRESS,
     abi: CFA_FORWARDER_ABI,
     functionName: 'getFlowrate',
@@ -337,13 +339,14 @@ export function useIsSubscribed(
 ): boolean {
   const usdcxAddress = process.env.NEXT_PUBLIC_USDCX_ADDRESS as `0x${string}` | undefined
   const { data } = useReadContract({
+    chainId: baseSepolia.id,
     address: CFA_ADDRESS,
     abi: CFA_FORWARDER_ABI,
     functionName: 'getFlowrate',
     args: usdcxAddress && sender && vault ? [usdcxAddress, sender, vault] : undefined,
     query: {
       enabled: !!usdcxAddress && !!sender && !!vault,
-      refetchInterval: 10_000,
+      refetchInterval: 5_000,
     },
   })
   return (data ?? 0n) > 0n
