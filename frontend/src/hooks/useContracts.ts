@@ -4,6 +4,7 @@ import { parseAbi } from 'viem'
 import { useQuery } from '@tanstack/react-query'
 import { getTextRecord, getAddressRecord } from '@ensdomains/ensjs/public'
 import { ensClient } from '@/lib/ensClient'
+import { baseClient } from '@/lib/baseClient'
 import { sepolia, baseSepolia } from 'viem/chains'
 
 // Dev A's subdomain registrar on Ethereum Sepolia — grants alice.noctwave.eth
@@ -32,6 +33,17 @@ const VAULT_ABI = parseAbi([
 
 const CFA_ADDRESS = '0xcfA132E353cB4E398080B9700609bb008eceB125' as const
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as const
+
+const ERC20_ABI = parseAbi([
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function balanceOf(address) view returns (uint256)',
+])
+
+const SUPER_TOKEN_ABI = parseAbi([
+  'function upgrade(uint256 amount)',
+  'function balanceOf(address) view returns (uint256)',
+])
 
 export function monthlyToFlowRate(usdcPerMonth: number): bigint {
   // USDCx has 18 decimals
@@ -134,10 +146,13 @@ export function useCreatorVault(creatorAddress?: `0x${string}`) {
 
 export function useCFAForwarder() {
   const { writeContractAsync } = useWriteContract()
+  const { switchChainAsync } = useSwitchChain()
   const usdcxAddress = process.env.NEXT_PUBLIC_USDCX_ADDRESS as `0x${string}` | undefined
 
-  const openStream = (receiverVault: `0x${string}`, flowRate: bigint) =>
-    writeContractAsync({
+  const openStream = async (receiverVault: `0x${string}`, flowRate: bigint) => {
+    await switchChainAsync({ chainId: baseSepolia.id })
+    return writeContractAsync({
+      chainId: baseSepolia.id,
       address: CFA_ADDRESS,
       abi: CFA_FORWARDER_ABI,
       functionName: 'createFlow',
@@ -149,9 +164,12 @@ export function useCFAForwarder() {
         '0x',
       ],
     })
+  }
 
-  const closeStream = (receiverVault: `0x${string}`) =>
-    writeContractAsync({
+  const closeStream = async (receiverVault: `0x${string}`) => {
+    await switchChainAsync({ chainId: baseSepolia.id })
+    return writeContractAsync({
+      chainId: baseSepolia.id,
       address: CFA_ADDRESS,
       abi: CFA_FORWARDER_ABI,
       functionName: 'deleteFlow',
@@ -162,8 +180,82 @@ export function useCFAForwarder() {
         '0x',
       ],
     })
+  }
 
   return { openStream, closeStream }
+}
+
+// Ensures the user has at least one month of USDCx before opening a stream.
+// Approves USDC and upgrades to USDCx if their wrapped balance is insufficient.
+// USDC = 6 decimals, USDCx = 18 decimals; upgrade(x) on the super token pulls
+// x / 1e12 of underlying USDC and mints x of USDCx.
+export function useUSDCxWrap() {
+  const { writeContractAsync } = useWriteContract()
+  const { switchChainAsync } = useSwitchChain()
+  const usdc = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}` | undefined
+  const usdcx = process.env.NEXT_PUBLIC_USDCX_ADDRESS as `0x${string}` | undefined
+
+  return {
+    ensureWrapped: async (user: `0x${string}`, monthlyPrice: number) => {
+      if (!usdc || !usdcx) throw new Error('USDC/USDCx env vars missing')
+      await switchChainAsync({ chainId: baseSepolia.id })
+
+      // Target buffer: one month of stream — covers Superfluid's 4-hour deposit
+      // requirement on testnets and gives a comfortable runway.
+      const targetX = BigInt(Math.ceil(monthlyPrice)) * 10n ** 18n
+
+      const balanceX = await baseClient.readContract({
+        address: usdcx,
+        abi: SUPER_TOKEN_ABI,
+        functionName: 'balanceOf',
+        args: [user],
+      })
+      if (balanceX >= targetX) return
+
+      const wrapAmountX = targetX - balanceX
+      const wrapAmountUnderlying = wrapAmountX / 10n ** 12n  // USDCx 18d → USDC 6d
+
+      const usdcBalance = await baseClient.readContract({
+        address: usdc,
+        abi: ERC20_ABI,
+        functionName: 'balanceOf',
+        args: [user],
+      })
+      if (usdcBalance < wrapAmountUnderlying) {
+        const need = Number(wrapAmountUnderlying) / 1e6
+        const have = Number(usdcBalance) / 1e6
+        throw new Error(
+          `Insufficient test USDC on Base Sepolia. Need ${need.toFixed(2)}, have ${have.toFixed(2)}. ` +
+          `Get test USDC from a Base Sepolia faucet (e.g. faucet.circle.com).`
+        )
+      }
+
+      const allowance = await baseClient.readContract({
+        address: usdc,
+        abi: ERC20_ABI,
+        functionName: 'allowance',
+        args: [user, usdcx],
+      })
+      if (allowance < wrapAmountUnderlying) {
+        // Approve a generous amount so future top-ups don't need re-approval
+        await writeContractAsync({
+          chainId: baseSepolia.id,
+          address: usdc,
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [usdcx, wrapAmountUnderlying * 100n],
+        })
+      }
+
+      await writeContractAsync({
+        chainId: baseSepolia.id,
+        address: usdcx,
+        abi: SUPER_TOKEN_ABI,
+        functionName: 'upgrade',
+        args: [wrapAmountX],
+      })
+    },
+  }
 }
 
 export function useFlowRate(
@@ -203,12 +295,17 @@ export function useIsSubscribed(
 
 export function useSubscriptionVault(vaultAddress?: `0x${string}`) {
   const { writeContractAsync } = useWriteContract()
+  const { switchChainAsync } = useSwitchChain()
   return {
-    recordSubscriber: (subscriber: `0x${string}`, active: boolean) => writeContractAsync({
-      address: vaultAddress!,
-      abi: VAULT_ABI,
-      functionName: 'recordSubscriber',
-      args: [subscriber, active],
-    }),
+    recordSubscriber: async (subscriber: `0x${string}`, active: boolean) => {
+      await switchChainAsync({ chainId: baseSepolia.id })
+      return writeContractAsync({
+        chainId: baseSepolia.id,
+        address: vaultAddress!,
+        abi: VAULT_ABI,
+        functionName: 'recordSubscriber',
+        args: [subscriber, active],
+      })
+    },
   }
 }

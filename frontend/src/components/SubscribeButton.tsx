@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { useAccount } from 'wagmi'
-import { useCFAForwarder, useSubscriptionVault, monthlyToFlowRate } from '@/hooks/useContracts'
+import { useCFAForwarder, useSubscriptionVault, useUSDCxWrap, monthlyToFlowRate } from '@/hooks/useContracts'
 import { Spinner } from './ui/Spinner'
 
 type SubState = 'idle' | 'confirming' | 'streaming'
@@ -18,17 +18,23 @@ export function SubscribeButton({ vaultAddress, monthlyPrice, state, onSuccess, 
   const { address } = useAccount()
   const { openStream, closeStream } = useCFAForwarder()
   const { recordSubscriber } = useSubscriptionVault(vaultAddress)
+  const { ensureWrapped } = useUSDCxWrap()
   const [hover, setHover] = useState(false)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   async function handleSubscribe() {
     if (!address) return
+    setErrorMsg(null)
     try {
+      await ensureWrapped(address, monthlyPrice)
       const flowRate = monthlyToFlowRate(monthlyPrice)
       await openStream(vaultAddress, flowRate)
       await recordSubscriber(address, true).catch(() => {}) // best-effort
       onSuccess?.()
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('Subscribe failed:', err)
+      setErrorMsg(msg.split('\n')[0])
     }
   }
 
@@ -78,8 +84,15 @@ export function SubscribeButton({ vaultAddress, monthlyPrice, state, onSuccess, 
   }
 
   return (
-    <button className="btn btn-primary btn-lg" onClick={handleSubscribe} style={{ minWidth: 240 }}>
-      Subscribe · ${monthlyPrice}/month
-    </button>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start', width: '100%' }}>
+      <button className="btn btn-primary btn-lg" onClick={handleSubscribe} style={{ minWidth: 240 }}>
+        Subscribe · ${monthlyPrice}/month
+      </button>
+      {errorMsg && (
+        <span style={{ fontSize: 12, color: 'var(--danger)', lineHeight: 1.5 }}>
+          {errorMsg}
+        </span>
+      )}
+    </div>
   )
 }
