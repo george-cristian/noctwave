@@ -2,7 +2,8 @@
 export const dynamic = 'force-dynamic'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { useAccount, useSignMessage, useWriteContract } from 'wagmi'
+import { useAccount, useSignMessage, useWriteContract, useSwitchChain } from 'wagmi'
+import { sepolia } from 'viem/chains'
 import { keccak256, toBytes, parseAbi } from 'viem'
 import { AppHeader } from '@/components/AppHeader'
 import { Avatar, seededGradient } from '@/components/ui/Avatar'
@@ -63,6 +64,7 @@ function UploadModal({
   const { transcodeAndUpload, progress, stage } = useVideoUpload()
   const { signMessageAsync } = useSignMessage()
   const { writeContractAsync } = useWriteContract()
+  const { switchChainAsync } = useSwitchChain()
   const [file, setFile] = useState<File | null>(null)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -134,11 +136,14 @@ function UploadModal({
       const feedCID = await uploadJson(feed)
 
       // Store the new CID in the registry so anyone can find this creator's feed
+      await switchChainAsync({ chainId: sepolia.id })
       await writeContractAsync({
+        chainId: sepolia.id,
         address: registrarAddress,
         abi: REGISTRY_ABI,
         functionName: 'setTextRecord',
         args: [ens, 'swarm-feed', feedCID],
+        gas: 300_000n,
       })
 
       setPublishing(false)
