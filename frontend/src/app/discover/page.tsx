@@ -56,7 +56,9 @@ export default function DiscoverPage() {
     ),
     enabled: !!address && !!creators && creators.length > 0,
     refetchInterval: 15_000,
-    staleTime: 10_000,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   })
 
   const { mySubs, topCreators } = useMemo(() => {

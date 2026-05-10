@@ -155,7 +155,7 @@ export function useCFAForwarder() {
 
   const openStream = async (receiverVault: `0x${string}`, flowRate: bigint) => {
     await switchChainAsync({ chainId: baseSepolia.id })
-    return writeContractAsync({
+    const hash = await writeContractAsync({
       chainId: baseSepolia.id,
       address: CFA_ADDRESS,
       abi: CFA_FORWARDER_ABI,
@@ -169,11 +169,15 @@ export function useCFAForwarder() {
       ],
       gas: 1_000_000n,
     })
+    // Wait for inclusion so getFlowrate reflects the new flow before we
+    // invalidate queries — otherwise the refetch caches a stale `0`.
+    await baseClient.waitForTransactionReceipt({ hash })
+    return hash
   }
 
   const closeStream = async (receiverVault: `0x${string}`) => {
     await switchChainAsync({ chainId: baseSepolia.id })
-    return writeContractAsync({
+    const hash = await writeContractAsync({
       chainId: baseSepolia.id,
       address: CFA_ADDRESS,
       abi: CFA_FORWARDER_ABI,
@@ -186,6 +190,8 @@ export function useCFAForwarder() {
       ],
       gas: 800_000n,
     })
+    await baseClient.waitForTransactionReceipt({ hash })
+    return hash
   }
 
   return { openStream, closeStream }
