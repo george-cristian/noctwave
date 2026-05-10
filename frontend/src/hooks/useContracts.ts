@@ -339,23 +339,43 @@ export function useFlowRate(
   })
 }
 
-export function useIsSubscribed(
+export function useSubscriptionStatus(
   sender?: `0x${string}`,
   vault?: `0x${string}`
-): boolean {
+) {
   const usdcxAddress = process.env.NEXT_PUBLIC_USDCX_ADDRESS as `0x${string}` | undefined
-  const { data } = useReadContract({
+  const ZERO = '0x0000000000000000000000000000000000000000'
+  // Skip the read when the vault hasn't been deployed yet — getFlowrate to
+  // address(0) just always returns 0 and pollutes the cache.
+  const validVault = vault && vault.toLowerCase() !== ZERO
+  const { data, isLoading, error, refetch } = useReadContract({
     chainId: baseSepolia.id,
     address: CFA_ADDRESS,
     abi: CFA_FORWARDER_ABI,
     functionName: 'getFlowrate',
-    args: usdcxAddress && sender && vault ? [usdcxAddress, sender, vault] : undefined,
+    args: usdcxAddress && sender && validVault ? [usdcxAddress, sender, vault] : undefined,
     query: {
-      enabled: !!usdcxAddress && !!sender && !!vault,
+      enabled: !!usdcxAddress && !!sender && !!validVault,
       refetchInterval: 5_000,
+      refetchOnMount: 'always',
+      staleTime: 0,
     },
   })
-  return (data ?? 0n) > 0n
+  const flowRate = (data as bigint | undefined) ?? 0n
+  return {
+    isSubscribed: flowRate > 0n,
+    flowRate,
+    isLoading,
+    error,
+    refetch,
+  }
+}
+
+export function useIsSubscribed(
+  sender?: `0x${string}`,
+  vault?: `0x${string}`
+): boolean {
+  return useSubscriptionStatus(sender, vault).isSubscribed
 }
 
 export function useSubscriptionVault(vaultAddress?: `0x${string}`) {

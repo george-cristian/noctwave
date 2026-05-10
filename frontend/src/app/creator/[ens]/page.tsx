@@ -12,7 +12,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { StreamBalance } from '@/components/StreamBalance'
 import { SubscribeButton } from '@/components/SubscribeButton'
 import { useVideoUpload } from '@/hooks/useVideoUpload'
-import { useCreatorVault, useIsSubscribed } from '@/hooks/useContracts'
+import { useCreatorVault, useSubscriptionStatus } from '@/hooks/useContracts'
 import { uploadToSwarm } from '@/lib/uploadHelper'
 import { generateContentKey, encryptKey, deriveDemoSubscriberSecret } from '@/lib/crypto'
 import { uploadJson, downloadJson, GATEWAY } from '@/lib/swarmClient'
@@ -352,13 +352,29 @@ export default function CreatorDashboard() {
   const [creatorAddress, setCreatorAddress] = useState<`0x${string}` | null>(null)
   const [monthlyPrice, setMonthlyPrice] = useState(0)
   const [streamSince, setStreamSince] = useState<Date | undefined>()
-  const [optimisticSub, setOptimisticSub] = useState(false)
 
   const isOwner = !!(address && creatorAddress && address.toLowerCase() === creatorAddress.toLowerCase())
 
-  const { data: vaultAddress } = useCreatorVault(creatorAddress ?? undefined)
-  const onChainSubscribed = useIsSubscribed(address, vaultAddress as `0x${string}` | undefined)
-  const isSubscribed = onChainSubscribed || optimisticSub
+  const { data: vaultAddress, isLoading: vaultLoading } = useCreatorVault(creatorAddress ?? undefined)
+  const {
+    isSubscribed,
+    flowRate,
+    isLoading: subLoading,
+    refetch: refetchSub,
+  } = useSubscriptionStatus(address, vaultAddress as `0x${string}` | undefined)
+
+  useEffect(() => {
+    if (vaultLoading || subLoading) return
+    console.log('[creator] subscription check', {
+      address,
+      ens,
+      creatorAddress,
+      vaultAddress,
+      flowRate: flowRate.toString(),
+      isSubscribed,
+      isOwner,
+    })
+  }, [address, ens, creatorAddress, vaultAddress, flowRate, isSubscribed, isOwner, vaultLoading, subLoading])
 
   useEffect(() => {
     let cancelled = false
@@ -514,8 +530,8 @@ export default function CreatorDashboard() {
                       monthlyPrice={monthlyPrice}
                       state="idle"
                       onSuccess={() => {
-                        setOptimisticSub(true)
                         setStreamSince(new Date())
+                        refetchSub()
                       }}
                     />
 
@@ -549,8 +565,8 @@ export default function CreatorDashboard() {
                       monthlyPrice={monthlyPrice}
                       state="streaming"
                       onStop={() => {
-                        setOptimisticSub(false)
                         setStreamSince(undefined)
+                        refetchSub()
                       }}
                     />
                     <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>

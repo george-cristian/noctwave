@@ -10,14 +10,12 @@ import { VideoPlayer } from '@/components/VideoPlayer'
 import { StreamBalance } from '@/components/StreamBalance'
 import { SubscribeButton } from '@/components/SubscribeButton'
 import { Spinner } from '@/components/ui/Spinner'
-import { useIsSubscribed, useCreatorVault } from '@/hooks/useContracts'
+import { useSubscriptionStatus, useCreatorVault } from '@/hooks/useContracts'
 import { deriveSharedSecret, decryptKey, deriveDemoSubscriberSecret } from '@/lib/crypto'
 import { fetchEncryptedKey } from '@/lib/keyDelivery'
 import { downloadJson } from '@/lib/swarmClient'
 import { ensClient } from '@/lib/ensClient'
 import type { PostMetadata, CreatorFeed } from '@/lib/types'
-
-type SubState = 'idle' | 'confirming' | 'streaming'
 
 const REGISTRAR_ABI = parseAbi([
   'function resolve(string label) view returns (address)',
@@ -35,7 +33,6 @@ export default function WatchPage() {
   const { address } = useAccount()
   const { signMessageAsync } = useSignMessage()
 
-  const [subState, setSubState] = useState<SubState>('idle')
   const [streamSince, setStreamSince] = useState<Date | undefined>()
   const [contentKey, setContentKey] = useState<Uint8Array | null>(null)
   const [celebrate, setCelebrate] = useState(false)
@@ -116,18 +113,36 @@ export default function WatchPage() {
     loadCreatorKey()
   }, [isCreator, post]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { data: vaultAddress } = useCreatorVault(creatorAddress ?? undefined)
-  const isSubscribed = useIsSubscribed(address, vaultAddress as `0x${string}` | undefined)
+  const { data: vaultAddress, isLoading: vaultLoading } = useCreatorVault(creatorAddress ?? undefined)
+  const {
+    isSubscribed,
+    flowRate,
+    isLoading: subLoading,
+  } = useSubscriptionStatus(address, vaultAddress as `0x${string}` | undefined)
 
-  // Auto-decrypt if already subscribed (subscriber flow)
+  // One-shot diagnostic so we can see why a page renders locked.
   useEffect(() => {
-    if (isCreator) return  // creator doesn't need subscription
-    if (isSubscribed && subState === 'idle' && post && creatorAddress) {
-      setSubState('streaming')
-      setStreamSince(new Date())
-      handleDecrypt()
-    }
-  }, [isSubscribed, post, creatorAddress, isCreator]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (loadingPost || vaultLoading || subLoading) return
+    console.log('[watch] subscription check', {
+      address,
+      ens,
+      creatorAddress,
+      vaultAddress,
+      flowRate: flowRate.toString(),
+      isSubscribed,
+      isCreator,
+    })
+  }, [address, ens, creatorAddress, vaultAddress, flowRate, isSubscribed, isCreator, loadingPost, vaultLoading, subLoading])
+
+  // Auto-decrypt whenever the on-chain subscription becomes (or already is) active.
+  useEffect(() => {
+    if (isCreator) return
+    if (!isSubscribed) return
+    if (!post || !creatorAddress) return
+    if (contentKey) return  // already decrypted
+    if (!streamSince) setStreamSince(new Date())
+    handleDecrypt()
+  }, [isSubscribed, post, creatorAddress, isCreator, contentKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleDecrypt() {
     if (!address || !post || !creatorAddress) return
@@ -164,21 +179,19 @@ export default function WatchPage() {
   }
 
   function handleSubscribeSuccess() {
-    setSubState('streaming')
     setStreamSince(new Date())
     setCelebrate(true)
     setTimeout(() => setCelebrate(false), 700)
-    setTimeout(() => handleDecrypt(), 1200)
+    handleDecrypt()
   }
 
   function handleStop() {
-    setSubState('idle')
     setContentKey(null)
     setStreamSince(undefined)
   }
 
-  // Creator always sees the video; subscribers need an active stream
-  const canWatch = isCreator || subState === 'streaming'
+  // Creator always sees the video; subscribers need an active on-chain stream.
+  const canWatch = isCreator || isSubscribed
 
   if (loadingPost) {
     return (
@@ -306,7 +319,7 @@ export default function WatchPage() {
                     ))}
                   </div>
                 </div>
-              ) : subState !== 'streaming' ? (
+              ) : !isSubscribed ? (
                 <div className="nw-enter card" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 18 }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span className="eyebrow">Subscription</span>
@@ -319,7 +332,7 @@ export default function WatchPage() {
                   <SubscribeButton
                     vaultAddress={(vaultAddress as `0x${string}`) ?? '0x0000000000000000000000000000000000000000'}
                     monthlyPrice={monthlyPrice}
-                    state={subState === 'confirming' ? 'confirming' : 'idle'}
+                    state="idle"
                     onSuccess={handleSubscribeSuccess}
                   />
 
