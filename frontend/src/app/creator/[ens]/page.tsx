@@ -19,6 +19,7 @@ import type { PostMetadata, CreatorFeed } from '@/lib/types'
 const REGISTRY_ABI = parseAbi([
   'function setTextRecord(string name, string key, string value) external',
   'function getTextRecord(string name, string key) view returns (string)',
+  'function resolve(string label) view returns (address)',
 ])
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -337,22 +338,35 @@ export default function CreatorDashboard() {
   const [showUpload, setShowUpload] = useState(false)
   const [posts, setPosts] = useState<PostMetadata[]>([])
   const [loadingPosts, setLoadingPosts] = useState(true)
+  const [creatorAddress, setCreatorAddress] = useState<`0x${string}` | null>(null)
+
+  const isOwner = !!(address && creatorAddress && address.toLowerCase() === creatorAddress.toLowerCase())
 
   useEffect(() => {
-    if (!address) return
     let cancelled = false
     const registrarAddress = process.env.NEXT_PUBLIC_ENS_REGISTRAR_ADDRESS as `0x${string}`
 
-    async function loadFeed() {
+    async function load() {
       try {
-        const feedCID = await ensClient.readContract({
-          address: registrarAddress,
-          abi: REGISTRY_ABI,
-          functionName: 'getTextRecord',
-          args: [ens, 'swarm-feed'],
-        }) as string
+        const [owner, feedCID] = await Promise.all([
+          ensClient.readContract({
+            address: registrarAddress,
+            abi: REGISTRY_ABI,
+            functionName: 'resolve',
+            args: [ens],
+          }) as Promise<`0x${string}`>,
+          ensClient.readContract({
+            address: registrarAddress,
+            abi: REGISTRY_ABI,
+            functionName: 'getTextRecord',
+            args: [ens, 'swarm-feed'],
+          }) as Promise<string>,
+        ])
 
-        if (!feedCID) { if (!cancelled) setPosts([]); return }
+        if (cancelled) return
+        setCreatorAddress(owner && owner !== '0x0000000000000000000000000000000000000000' ? owner : null)
+
+        if (!feedCID) { setPosts([]); return }
 
         const feed = await downloadJson<CreatorFeed>(feedCID)
         if (!cancelled) setPosts(feed.posts)
@@ -362,9 +376,9 @@ export default function CreatorDashboard() {
         if (!cancelled) setLoadingPosts(false)
       }
     }
-    loadFeed()
+    load()
     return () => { cancelled = true }
-  }, [address, ens])
+  }, [ens])
 
   function handlePublished(post: PostMetadata) {
     setPosts(prev => [post, ...prev])
@@ -378,28 +392,32 @@ export default function CreatorDashboard() {
 
           <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 32 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <span className="eyebrow">Creator</span>
+              <span className="eyebrow">{isOwner ? 'Creator' : 'Profile'}</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <Avatar seed={ens} size={44} />
                 <h1 className="display" style={{ margin: 0, fontSize: 32, letterSpacing: '-0.03em' }}>{ens}.noctwave.eth</h1>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-ghost">Settings</button>
-              <button className="btn btn-primary" onClick={() => setShowUpload(true)} disabled={!address}>
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                  <path d="M8 2v10M3 7l5-5 5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                Upload video
-              </button>
-            </div>
+            {isOwner && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-ghost">Settings</button>
+                <button className="btn btn-primary" onClick={() => setShowUpload(true)} disabled={!address}>
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M8 2v10M3 7l5-5 5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  Upload video
+                </button>
+              </div>
+            )}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 32 }}>
-            <Stat label="Posts" value={loadingPosts ? '—' : String(posts.length)} />
-            <Stat label="Current MRR" value="—" sub="streaming · live" />
-            <Stat label="All-time earnings" value="—" sub="paid out to stealth" />
-          </div>
+          {isOwner && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 32 }}>
+              <Stat label="Posts" value={loadingPosts ? '—' : String(posts.length)} />
+              <Stat label="Current MRR" value="—" sub="streaming · live" />
+              <Stat label="All-time earnings" value="—" sub="paid out to stealth" />
+            </div>
+          )}
 
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, letterSpacing: '-0.01em' }}>Posts</h2>
@@ -416,7 +434,7 @@ export default function CreatorDashboard() {
 
           {!loadingPosts && posts.length === 0 && (
             <div className="card" style={{ padding: 48, textAlign: 'center', color: 'var(--text-dim)', fontSize: 14 }}>
-              No posts yet. Upload your first video.
+              {isOwner ? 'No posts yet. Upload your first video.' : 'This creator hasn\'t published anything yet.'}
             </div>
           )}
 
@@ -436,7 +454,7 @@ export default function CreatorDashboard() {
         </div>
       </div>
 
-      {showUpload && address && (
+      {showUpload && address && isOwner && (
         <UploadModal
           address={address}
           ens={ens}

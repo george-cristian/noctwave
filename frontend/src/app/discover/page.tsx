@@ -31,11 +31,7 @@ function CreatorGrid({
             thumbnailCid: c.latestPost?.thumbnail_cid,
             hasContent: !!c.latestPost,
           }}
-          onOpen={() => {
-            if (c.latestPost) {
-              router.push(`/watch/${c.label}/${c.latestPost.id}`)
-            }
-          }}
+          onOpen={() => router.push(`/creator/${c.label}`)}
         />
       ))}
     </div>
