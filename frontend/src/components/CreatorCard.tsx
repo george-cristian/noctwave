@@ -2,14 +2,16 @@
 import { useState, useEffect } from 'react'
 import { Avatar, seededGradient } from './ui/Avatar'
 import { EncryptionBadge } from './ui/EncryptionBadge'
+import { GATEWAY } from '@/lib/swarmClient'
 
 export interface Creator {
   ens: string
-  subscribers: number
   price: number
   bio: string
+  postCount?: number
   thumbnailCid?: string
   thumbs?: string[]
+  hasContent?: boolean
 }
 
 export function CreatorCard({
@@ -50,26 +52,38 @@ export function CreatorCard({
       }}
     >
       <div style={{ position: 'relative', aspectRatio: '16 / 10', overflow: 'hidden', borderBottom: '1px solid var(--border)' }}>
-        {thumbs.map((t, i) => (
-          <div
-            key={i}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background: seededGradient(creator.ens + ':' + t),
-              opacity: i === thumbIdx ? 1 : 0,
-              transition: 'opacity 600ms ease-out',
-            }}
-          >
-            <div style={{
-              position: 'absolute',
-              inset: 0,
-              background: `repeating-linear-gradient(${(creator.ens.length * 17) % 180}deg, transparent 0 12px, rgba(255,255,255,0.04) 12px 13px)`,
-            }} />
-          </div>
-        ))}
+        {creator.thumbnailCid ? (
+          <img
+            src={`${GATEWAY}/bzz/${creator.thumbnailCid}`}
+            alt={creator.ens}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          thumbs.map((t, i) => (
+            <div
+              key={i}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: seededGradient(creator.ens + ':' + t),
+                opacity: i === thumbIdx ? 1 : 0,
+                transition: 'opacity 600ms ease-out',
+              }}
+            >
+              <div style={{
+                position: 'absolute',
+                inset: 0,
+                background: `repeating-linear-gradient(${(creator.ens.length * 17) % 180}deg, transparent 0 12px, rgba(255,255,255,0.04) 12px 13px)`,
+              }} />
+            </div>
+          ))
+        )}
         <div style={{ position: 'absolute', left: 12, bottom: 12, display: 'flex', gap: 6 }}>
-          <EncryptionBadge>Encrypted</EncryptionBadge>
+          {creator.hasContent === false ? (
+            <span className="pill" style={{ color: 'var(--text-dim)' }}>No posts yet</span>
+          ) : (
+            <EncryptionBadge>Encrypted</EncryptionBadge>
+          )}
         </div>
       </div>
 
@@ -79,12 +93,12 @@ export function CreatorCard({
           <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <span style={{ fontSize: 15, fontWeight: 500, color: 'var(--text)' }}>{creator.ens}</span>
             <span className="num" style={{ fontSize: 12, color: 'var(--text-dim)' }}>
-              {creator.subscribers.toLocaleString()} subs
+              {creator.postCount ? `${creator.postCount} post${creator.postCount === 1 ? '' : 's'}` : 'No posts yet'}
             </span>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 4 }}>
             <span className="num" style={{ fontSize: 15, color: 'var(--text)', fontWeight: 500 }}>
-              ${creator.price}
+              {creator.price > 0 ? `$${creator.price}` : '—'}
             </span>
             <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>/mo</span>
           </div>

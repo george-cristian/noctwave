@@ -39,7 +39,7 @@ export function AppHeader() {
           </Link>
 
           <nav className="nav">
-            <Link href="/">Discover</Link>
+            <Link href="/discover">Discover</Link>
             {creatorLabel ? (
               <Link href={`/creator/${creatorLabel}`}>Go to dashboard</Link>
             ) : (
