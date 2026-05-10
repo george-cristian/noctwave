@@ -39,6 +39,21 @@ export async function swarmDownload(reference: string): Promise<Uint8Array> {
   return bee.downloadData(reference)
 }
 
+// Upload any JSON-serialisable value; returns the Swarm CID string
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function uploadJson(data: any): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(data))
+  const result = await bee.uploadData(NULL_STAMP, bytes)
+  return result.reference.toString()
+}
+
+// Download and JSON-parse bytes at a Swarm CID
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function downloadJson<T = any>(cid: string): Promise<T> {
+  const data = await bee.downloadData(cid)
+  return data.json() as T
+}
+
 // ── High-level JSON feed API ──────────────────────────────────────────────────
 // Uses bee.setJsonFeed / bee.getJsonFeed which handle upload + feed write/read
 // internally. No BytesReference handling needed.
