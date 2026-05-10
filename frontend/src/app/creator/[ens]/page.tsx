@@ -3,7 +3,10 @@ export const dynamic = 'force-dynamic'
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAccount, useSignMessage, useWriteContract } from 'wagmi'
+import { waitForTransactionReceipt } from '@wagmi/core'
+import { wagmiConfig } from '@/lib/wagmi'
 import { keccak256, toBytes, parseAbi } from 'viem'
+import { sepolia } from 'wagmi/chains'
 import { AppHeader } from '@/components/AppHeader'
 import { Avatar, seededGradient } from '@/components/ui/Avatar'
 import { EncryptionBadge } from '@/components/ui/EncryptionBadge'
@@ -133,13 +136,18 @@ function UploadModal({
       // Upload updated feed JSON to Swarm (plain bytes — no Feed signing needed)
       const feedCID = await uploadJson(feed)
 
-      // Store the new CID in the registry so anyone can find this creator's feed
-      await writeContractAsync({
+      // Store the new CID in the registry so anyone can find this creator's feed.
+      // Pin to Ethereum Sepolia — that's where NoctwaveRegistry is deployed.
+      // Wait for confirmation before calling onPublished so the watch page
+      // reads the updated CID immediately when the user clicks the video.
+      const txHash = await writeContractAsync({
         address: registrarAddress,
         abi: REGISTRY_ABI,
         functionName: 'setTextRecord',
         args: [ens, 'swarm-feed', feedCID],
+        chainId: sepolia.id,
       })
+      await waitForTransactionReceipt(wagmiConfig, { hash: txHash })
 
       setPublishing(false)
       setResultCID(manifestCID)
